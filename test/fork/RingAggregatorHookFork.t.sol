@@ -1,0 +1,1319 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity 0.8.26;
+
+import {Test} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
+import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
+import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+
+import {RingAggregatorHook} from "../../src/RingAggregatorHook.sol";
+import {RingUniBurner} from "../../src/RingUniBurner.sol";
+import {IFewFactory} from "../../src/interfaces/IFewFactory.sol";
+import {IFewWrappedToken} from "../../src/interfaces/IFewWrappedToken.sol";
+import {ISwapV2Pair, ISwapV2Factory, IWETH9} from "../../src/interfaces/IFewV2.sol";
+import {BaseHook} from "../../src/utils/BaseHook.sol";
+import {HookMiner} from "../utils/HookMiner.sol";
+
+interface IV4Quoter {
+    struct QuoteExactSingleParams {
+        PoolKey poolKey;
+        bool zeroForOne;
+        uint128 exactAmount;
+        bytes hookData;
+    }
+
+    function quoteExactInputSingle(QuoteExactSingleParams memory params)
+        external
+        returns (uint256 amountOut, uint256 gasEstimate);
+
+    function quoteExactOutputSingle(QuoteExactSingleParams memory params)
+        external
+        returns (uint256 amountIn, uint256 gasEstimate);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Adversarial test helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+/// @dev Force-feeds ETH to a target via selfdestruct. Same-tx selfdestruct still
+///      transfers balance to target post-Cancun.
+contract SelfDestructAttacker {
+    constructor(address payable target) payable {
+        selfdestruct(target);
+    }
+}
+
+/// @dev Reentrant `receive()` that tries to re-enter `hook.sweep`. nonReentrant must block.
+contract ReentrantSweepReceiver {
+    RingAggregatorHook public immutable hookContract;
+
+    constructor(address _hook) {
+        hookContract = RingAggregatorHook(payable(_hook));
+    }
+
+    receive() external payable {
+        hookContract.sweep(address(0));
+    }
+}
+
+/// @dev Test-only subclass that skips BaseHook's address-bit validation, so we can
+///      deploy at any address to exercise constructor-body reverts (zero-address checks).
+contract HookNoAddressCheck is RingAggregatorHook {
+    constructor(
+        IPoolManager _pm,
+        IFewFactory _fewFactory,
+        ISwapV2Factory _fewV2Factory,
+        IWETH9 _weth,
+        address _feeRecipient,
+        address _uniBurner,
+        address[6] memory _defaultConnectors
+    ) RingAggregatorHook(_pm, _fewFactory, _fewV2Factory, _weth, _feeRecipient, _uniBurner, _defaultConnectors) {}
+    function _validateHookAddress(BaseHook) internal pure override {}
+}
+
+/// @notice Mainnet fork e2e for RingAggregatorHook (admin-less variant).
+///         Coverage scope: core swap correctness, ETH abuse + sweep, mocked-external
+///         pair attacks, constructor zero-address checks, fee skim (5 bps -> uniBurner),
+///         end-to-end push to mainnet TokenJar. NO owner / pause / route-management
+///         tests, since V1 has no such surface.
+///         Skipped if `ETH_RPC_URL` is not set.
+contract RingAggregatorHookForkTest is Test {
+    using PoolIdLibrary for PoolKey;
+    using CurrencyLibrary for Currency;
+
+    // Mainnet addresses
+    address constant V4_PM = 0x000000000004444c5dc75cB358380D2e3dE08A90;
+    address constant V4_QUOTER = 0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203;
+    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address constant USDR = 0x4EA40dcee961675683e0a2e1721Bd49CB9bca913;
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant FW_ETH = 0xa250CC729Bb3323e7933022a67B52200fE354767;
+    address constant FW_WBTC = 0x2078f336Fdd260f708BEc4a20c82b063274E1b23;
+    address constant FW_USDC = 0x0492560FA7Cfd6A85E50D8bE3F77318994F8f429;
+    address constant FW_USDT = 0xef87f4608e601E8564800265AeE1c1FfaDF73283;
+    address constant FW_DAI = 0x8A6fe57C08C84e0f4eE97aAe68a62e820a37d259;
+    address constant FW_USDR = 0x29A294F8FE285Dfb259705213e375eCb7Fcf9d9b;
+    address constant FW_UNI = 0xE8E1F50392Bd61D0F8F48E8E7aF51D3b8a52090a;
+    address constant USDS = 0xdC035D45d973E3EC169d2276DDab16f1e407384F;
+    address constant FW_USDS = 0xD777151C92C05fEa839b2c21b345a78e1F1163Fe;
+    address constant FEW_FACTORY = 0x7D86394139bf1122E82FDF45Bb4e3b038A4464DD;
+    address constant RING_FACTORY = 0xeb2A625B704d73e82946D8d026E1F588Eed06416;
+    address constant FEWV2_PAIR = 0x54222F404dcfAc705322045F01D100380b871450;
+    /// @notice Mainnet TokenJar (canonical Uniswap fee collector).
+    address constant TOKEN_JAR_MAINNET = 0xf38521f130fcCF29dB1961597bc5d2B60F995f85;
+
+    uint256 constant FEE_DENOM = 10_000;
+    uint256 constant PROTOCOL_FEE_BPS = 5;
+    uint256 constant MIN_PAIR_RESERVE = 1000;
+    uint160 constant INIT_PRICE = 79228162514264337593543950336;
+
+    address constant FEE_RECIPIENT = address(0xFEE);
+    address constant USER = address(0xBEEF);
+    /// @notice Owner of the RingUniBurner (separate concern from the hook — the hook itself
+    ///         has no owner). Used only inside RingUniBurner for emergency-withdraw etc.
+    address constant BURNER_OWNER = address(0xCAFE);
+
+    bool forked;
+    RingAggregatorHook hook;
+    RingUniBurner burner;
+    PoolSwapTest swapRouter;
+    PoolModifyLiquidityTest modifyRouter;
+    PoolKey ethUsdcKey;
+
+    function setUp() public {
+        string memory rpc = vm.envOr("ETH_RPC_URL", string(""));
+        if (bytes(rpc).length == 0) {
+            forked = false;
+            return;
+        }
+        vm.createSelectFork(rpc);
+        forked = true;
+
+        // 1. Deploy RingUniBurner first (immutable in V1 — must be set at hook construction).
+        burner = new RingUniBurner(TOKEN_JAR_MAINNET, FEW_FACTORY, BURNER_OWNER);
+
+        // 2. Mine a salt for the hook permission flags.
+        uint160 flags = uint160(
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+        );
+        bytes memory creationCode = type(RingAggregatorHook).creationCode;
+        bytes memory ctorArgs = abi.encode(
+            IPoolManager(V4_PM),
+            IFewFactory(FEW_FACTORY),
+            ISwapV2Factory(RING_FACTORY),
+            IWETH9(WETH),
+            FEE_RECIPIENT,
+            address(burner),
+            _defaultConnectors()
+        );
+        (address mined, bytes32 salt) = HookMiner.find(address(this), flags, creationCode, ctorArgs);
+
+        // 3. Deploy the hook using CREATE2 with mined salt.
+        hook = new RingAggregatorHook{salt: salt}(
+            IPoolManager(V4_PM),
+            IFewFactory(FEW_FACTORY),
+            ISwapV2Factory(RING_FACTORY),
+            IWETH9(WETH),
+            FEE_RECIPIENT,
+            address(burner),
+            _defaultConnectors()
+        );
+        require(address(hook) == mined, "Hook address mismatch");
+
+        // 4. V4 test helpers.
+        swapRouter = new PoolSwapTest(IPoolManager(V4_PM));
+        modifyRouter = new PoolModifyLiquidityTest(IPoolManager(V4_PM));
+
+        // 5. Pool key for ETH/USDC.
+        ethUsdcKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(USDC),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+
+        // 6. Initialize the pool.
+        IPoolManager(V4_PM).initialize(ethUsdcKey, INIT_PRICE);
+    }
+
+    modifier requireFork() {
+        if (!forked) {
+            vm.skip(true);
+        }
+        _;
+    }
+
+    function _routeData3(address a, address b, address c, uint256 amountLimit) internal pure returns (bytes memory) {
+        address[] memory path = new address[](3);
+        path[0] = a;
+        path[1] = b;
+        path[2] = c;
+        return abi.encode(path, amountLimit);
+    }
+
+    function _routeData4(address a, address b, address c, address d, uint256 amountLimit)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        address[] memory path = new address[](4);
+        path[0] = a;
+        path[1] = b;
+        path[2] = c;
+        path[3] = d;
+        return abi.encode(path, amountLimit);
+    }
+
+    function _defaultConnectors() internal pure returns (address[6] memory connectors) {
+        connectors[0] = FW_ETH;
+        connectors[1] = FW_WBTC;
+        connectors[2] = FW_USDC;
+        connectors[3] = FW_USDT;
+        connectors[4] = FW_DAI;
+        connectors[5] = FW_USDR;
+    }
+
+    function _netAfterFee(uint256 grossFwOut) internal pure returns (uint256) {
+        return grossFwOut - (grossFwOut * PROTOCOL_FEE_BPS) / FEE_DENOM;
+    }
+
+    function _grossUpForFee(uint256 userOut) internal pure returns (uint256) {
+        return (userOut * FEE_DENOM + (FEE_DENOM - PROTOCOL_FEE_BPS) - 1) / (FEE_DENOM - PROTOCOL_FEE_BPS);
+    }
+
+    function _v2AmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256) {
+        uint256 amountInWithFee = amountIn * 997;
+        return (amountInWithFee * reserveOut) / ((reserveIn * 1000) + amountInWithFee);
+    }
+
+    function _v2AmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256) {
+        return ((reserveIn * amountOut * 1000) / ((reserveOut - amountOut) * 997)) + 1;
+    }
+
+    function _quoteHopExactInput(address pair, address tokenIn, address tokenOut, uint256 amountIn)
+        internal
+        view
+        returns (bool ok, uint256 amountOut)
+    {
+        if (pair == address(0) || amountIn == 0) return (false, 0);
+        address token0 = ISwapV2Pair(pair).token0();
+        address token1 = ISwapV2Pair(pair).token1();
+        (uint112 r0, uint112 r1,) = ISwapV2Pair(pair).getReserves();
+
+        uint256 reserveIn;
+        uint256 reserveOut;
+        if (tokenIn == token0 && tokenOut == token1) {
+            (reserveIn, reserveOut) = (uint256(r0), uint256(r1));
+        } else if (tokenIn == token1 && tokenOut == token0) {
+            (reserveIn, reserveOut) = (uint256(r1), uint256(r0));
+        } else {
+            return (false, 0);
+        }
+
+        if (reserveIn <= MIN_PAIR_RESERVE || reserveOut <= MIN_PAIR_RESERVE) return (false, 0);
+        amountOut = _v2AmountOut(amountIn, reserveIn, reserveOut);
+        ok = amountOut != 0;
+    }
+
+    function _quoteHopExactOutput(address pair, address tokenIn, address tokenOut, uint256 amountOut)
+        internal
+        view
+        returns (bool ok, uint256 amountIn)
+    {
+        if (pair == address(0) || amountOut == 0) return (false, 0);
+        address token0 = ISwapV2Pair(pair).token0();
+        address token1 = ISwapV2Pair(pair).token1();
+        (uint112 r0, uint112 r1,) = ISwapV2Pair(pair).getReserves();
+
+        uint256 reserveIn;
+        uint256 reserveOut;
+        if (tokenIn == token0 && tokenOut == token1) {
+            (reserveIn, reserveOut) = (uint256(r0), uint256(r1));
+        } else if (tokenIn == token1 && tokenOut == token0) {
+            (reserveIn, reserveOut) = (uint256(r1), uint256(r0));
+        } else {
+            return (false, 0);
+        }
+
+        if (reserveIn <= MIN_PAIR_RESERVE || reserveOut <= MIN_PAIR_RESERVE || amountOut >= reserveOut) {
+            return (false, 0);
+        }
+        amountIn = _v2AmountIn(amountOut, reserveIn, reserveOut);
+        ok = amountIn != 0;
+    }
+
+    function _bestDefaultExactInput(address fewIn, address fewOut, uint256 amountIn)
+        internal
+        view
+        returns (uint256 bestGrossOut)
+    {
+        bool found;
+        address pair = ISwapV2Factory(RING_FACTORY).getPair(fewIn, fewOut);
+        (found, bestGrossOut) = _quoteHopExactInput(pair, fewIn, fewOut, amountIn);
+
+        address[6] memory connectors = _defaultConnectors();
+        for (uint256 i = 0; i < connectors.length; ++i) {
+            address connector = connectors[i];
+            if (connector == fewIn || connector == fewOut) continue;
+
+            address pair0 = ISwapV2Factory(RING_FACTORY).getPair(fewIn, connector);
+            address pair1 = ISwapV2Factory(RING_FACTORY).getPair(connector, fewOut);
+            (bool ok, uint256 midOut) = _quoteHopExactInput(pair0, fewIn, connector, amountIn);
+            if (!ok) continue;
+            uint256 grossOut;
+            (ok, grossOut) = _quoteHopExactInput(pair1, connector, fewOut, midOut);
+            if (!ok) continue;
+
+            if (!found || grossOut > bestGrossOut) {
+                found = true;
+                bestGrossOut = grossOut;
+            }
+        }
+        require(found, "no default exact-in route");
+    }
+
+    function _bestDefaultExactOutput(address fewIn, address fewOut, uint256 grossOut)
+        internal
+        view
+        returns (uint256 bestAmountIn)
+    {
+        bool found;
+        address pair = ISwapV2Factory(RING_FACTORY).getPair(fewIn, fewOut);
+        (found, bestAmountIn) = _quoteHopExactOutput(pair, fewIn, fewOut, grossOut);
+
+        address[6] memory connectors = _defaultConnectors();
+        for (uint256 i = 0; i < connectors.length; ++i) {
+            address connector = connectors[i];
+            if (connector == fewIn || connector == fewOut) continue;
+
+            address pair0 = ISwapV2Factory(RING_FACTORY).getPair(fewIn, connector);
+            address pair1 = ISwapV2Factory(RING_FACTORY).getPair(connector, fewOut);
+            (bool ok, uint256 midIn) = _quoteHopExactOutput(pair1, connector, fewOut, grossOut);
+            if (!ok) continue;
+            uint256 amountIn;
+            (ok, amountIn) = _quoteHopExactOutput(pair0, fewIn, connector, midIn);
+            if (!ok) continue;
+
+            if (!found || amountIn < bestAmountIn) {
+                found = true;
+                bestAmountIn = amountIn;
+            }
+        }
+        require(found, "no default exact-out route");
+    }
+
+    // ─────────── Sanity ───────────
+
+    function test_fork_setUpInitializedHookPool() public requireFork {
+        assertEq(address(ethUsdcKey.hooks), address(hook));
+    }
+
+    function test_fork_defaultRouteResolves() public requireFork {
+        (address fewA, address fewB, address pair) = hook.defaultRouteFor(ethUsdcKey);
+        assertEq(fewA, FW_ETH, "fewA == fwETH");
+        assertEq(fewB, FW_USDC, "fewB == fwUSDC");
+        assertEq(pair, FEWV2_PAIR, "pair == real fewV2 pair");
+    }
+
+    function test_fork_defaultConnectorsConfigured() public requireFork {
+        address[6] memory connectors = _defaultConnectors();
+        for (uint256 i = 0; i < connectors.length; ++i) {
+            assertEq(hook.defaultConnector(i), connectors[i], "connector mismatch");
+        }
+        assertEq(IFewFactory(FEW_FACTORY).getWrappedToken(USDR), FW_USDR, "fwUSDR canonical");
+    }
+
+    function test_fork_emptyHookData_autoRoute_matchesBestDefaultQuote_exactInput() public requireFork {
+        uint256 amountIn = 0.01 ether;
+        uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, amountIn));
+
+        vm.deal(USER, amountIn);
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, "");
+
+        uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        assertEq(received, expectedNetOut, "empty hookData chose best exact-in default route");
+    }
+
+    function test_fork_v4Quoter_emptyHookData_matchesActualSwap_exactInput() public requireFork {
+        uint256 amountIn = 0.01 ether;
+        uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, amountIn));
+
+        (uint256 quotedAmountOut, uint256 gasEstimate) = IV4Quoter(V4_QUOTER)
+            .quoteExactInputSingle(
+                IV4Quoter.QuoteExactSingleParams({
+                    poolKey: ethUsdcKey, zeroForOne: true, exactAmount: uint128(amountIn), hookData: ""
+                })
+            );
+        assertEq(quotedAmountOut, expectedNetOut, "V4Quoter sees default auto route");
+        assertGt(gasEstimate, 0, "V4Quoter returns gas estimate");
+
+        vm.deal(USER, amountIn);
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, "");
+
+        uint256 actualAmountOut = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        assertEq(quotedAmountOut, actualAmountOut, "V4Quoter quote matches actual swap");
+    }
+
+    function test_fork_v4Quoter_emptyHookData_matchesActualSwap_exactOutput() public requireFork {
+        uint256 amountOut = 10_000;
+        uint256 expectedIn = _bestDefaultExactOutput(FW_ETH, FW_USDC, _grossUpForFee(amountOut));
+
+        (uint256 quotedAmountIn, uint256 gasEstimate) = IV4Quoter(V4_QUOTER)
+            .quoteExactOutputSingle(
+                IV4Quoter.QuoteExactSingleParams({
+                    poolKey: ethUsdcKey, zeroForOne: true, exactAmount: uint128(amountOut), hookData: ""
+                })
+            );
+        assertEq(quotedAmountIn, expectedIn, "V4Quoter sees default exact-out auto route");
+        assertGt(gasEstimate, 0, "V4Quoter returns gas estimate");
+
+        vm.deal(USER, quotedAmountIn);
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: int256(amountOut), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap{value: quotedAmountIn}(ethUsdcKey, params, settings, "");
+
+        uint256 actualAmountOut = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        assertEq(actualAmountOut, amountOut, "actual swap returns exact output");
+        assertEq(uint256(uint128(-delta.amount0())), quotedAmountIn, "V4Quoter quote matches actual input");
+    }
+
+    function test_fork_initAllowsFewFactorySupportedPoolWithoutDirectPair() public requireFork {
+        assertEq(ISwapV2Factory(RING_FACTORY).getPair(FW_ETH, FW_USDS), address(0), "test assumes no direct pair");
+
+        PoolKey memory ethUsdsKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(USDS),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+
+        IPoolManager(V4_PM).initialize(ethUsdsKey, INIT_PRICE);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdsKey, p, s, "");
+    }
+
+    // ─────────── Initialize is rejected for invalid configs ───────────
+
+    function test_fork_revertsInitOnZeroFee() public requireFork {
+        PoolKey memory badKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(USDC),
+            fee: 0,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        vm.expectRevert();
+        IPoolManager(V4_PM).initialize(badKey, INIT_PRICE);
+    }
+
+    function test_fork_revertsInitOnFewWrapPair() public requireFork {
+        // ETH/fwETH would be a 1:1 wrapper pair — beforeInitialize must refuse.
+        PoolKey memory wrapKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(FW_ETH),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        vm.expectRevert();
+        IPoolManager(V4_PM).initialize(wrapKey, INIT_PRICE);
+    }
+
+    // ─────────── e2e × 4: ExactIn/Out × zeroForOne/oneForZero ───────────
+
+    function test_fork_e2e_ETH_to_USDC_exactInput() public requireFork {
+        uint256 amountIn = 0.5 ether;
+        vm.deal(USER, 1 ether);
+
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, "");
+
+        uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        assertGt(received, 0, "user must receive USDC");
+
+        assertEq(IERC20(USDC).balanceOf(address(hook)), 0, "Hook USDC residue should be 0");
+
+        int128 d0 = delta.amount0();
+        int128 d1 = delta.amount1();
+        assertEq(int256(d0), -int256(amountIn), "delta.amount0 mismatch");
+        assertEq(int256(d1), int256(received), "delta.amount1 mismatch");
+    }
+
+    function test_fork_e2e_USDC_to_ETH_exactInput() public requireFork {
+        uint256 amountIn = 2000e6;
+        deal(USDC, USER, amountIn);
+        vm.prank(USER);
+        IERC20(USDC).approve(address(swapRouter), type(uint256).max);
+
+        uint256 userEthBefore = USER.balance;
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap(ethUsdcKey, params, settings, "");
+
+        uint256 received = USER.balance - userEthBefore;
+        assertGt(received, 0, "user must receive ETH");
+
+        assertEq(IERC20(FW_ETH).balanceOf(address(hook)), 0, "Hook fwETH residue should be 0");
+        assertEq(IERC20(FW_USDC).balanceOf(address(hook)), 0, "Hook fwUSDC residue should be 0");
+        assertEq(address(hook).balance, 0, "Hook ETH residue should be 0");
+
+        int128 d0 = delta.amount0();
+        int128 d1 = delta.amount1();
+        assertEq(int256(d1), -int256(amountIn), "delta.amount1 mismatch");
+        assertApproxEqAbs(int256(d0), int256(received), 10, "delta.amount0 within 10 wei of received");
+    }
+
+    function test_fork_e2e_ETH_to_USDC_exactOutput() public requireFork {
+        uint256 amountOut = 500e6;
+
+        (uint112 r0, uint112 r1,) = ISwapV2Pair(FEWV2_PAIR).getReserves();
+        bool fwEthIsToken0 = ISwapV2Pair(FEWV2_PAIR).token0() == FW_ETH;
+        (uint256 reserveIn, uint256 reserveOut) =
+            fwEthIsToken0 ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
+        uint256 expectedIn = (reserveIn * amountOut * 1000) / ((reserveOut - amountOut) * 997) + 1;
+        require(expectedIn < 1 ether, "Expected < 1 ETH for 500 USDC - reserves too thin?");
+
+        uint256 ethBudget = expectedIn + 0.05 ether;
+        vm.deal(USER, ethBudget);
+
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: int256(amountOut), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap{value: ethBudget}(ethUsdcKey, params, settings, "");
+
+        uint256 usdcReceived = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        assertGe(usdcReceived, amountOut, "Should receive at least exact USDC amount");
+        assertLe(usdcReceived, amountOut + 10, "USDC received within 10 wei of target");
+
+        assertEq(address(hook).balance, 0, "Hook ETH residue should be 0");
+
+        int128 d0 = delta.amount0();
+        int128 d1 = delta.amount1();
+        assertEq(int256(d1), int256(amountOut), "delta.amount1 should be +amountOut");
+        assertLt(int256(d0), 0, "delta.amount0 should be negative");
+    }
+
+    function test_fork_e2e_USDC_to_ETH_exactOutput() public requireFork {
+        uint256 amountOut = 0.2 ether;
+
+        (uint112 r0, uint112 r1,) = ISwapV2Pair(FEWV2_PAIR).getReserves();
+        bool fwEthIsToken0 = ISwapV2Pair(FEWV2_PAIR).token0() == FW_ETH;
+        (uint256 reserveIn, uint256 reserveOut) =
+            fwEthIsToken0 ? (uint256(r1), uint256(r0)) : (uint256(r0), uint256(r1));
+        uint256 expectedIn = (reserveIn * amountOut * 1000) / ((reserveOut - amountOut) * 997) + 1;
+
+        uint256 usdcBudget = expectedIn * 101 / 100;
+        deal(USDC, USER, usdcBudget);
+        vm.prank(USER);
+        IERC20(USDC).approve(address(swapRouter), type(uint256).max);
+
+        uint256 userEthBefore = USER.balance;
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: false, amountSpecified: int256(amountOut), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        PoolSwapTest.TestSettings memory settings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap(ethUsdcKey, params, settings, "");
+
+        uint256 ethReceived = USER.balance - userEthBefore;
+        assertGe(ethReceived, amountOut, "Should receive at least exact ETH amount");
+        assertLe(ethReceived, amountOut + 10, "ETH received within 10 wei of target");
+
+        // ExactOut intentionally leaves rounding surplus in the hook (sweepable).
+        assertLt(address(hook).balance, amountOut, "Hook surplus should be << amountOut");
+
+        int128 d0 = delta.amount0();
+        int128 d1 = delta.amount1();
+        assertEq(int256(d0), int256(amountOut), "delta.amount0 should be +amountOut");
+        assertLt(int256(d1), 0, "delta.amount1 should be negative");
+    }
+
+    // ─────────── Calldata-routed e2e: fwETH -> fwUSDT -> fwUSDC ───────────
+
+    function test_fork_calldataRoute_ETH_to_USDC_viaUSDT_exactInput() public requireFork {
+        uint256 amountIn = 0.01 ether;
+        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 1);
+
+        vm.deal(USER, amountIn);
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+        uint256 burnerFwUsdcBefore = IERC20(FW_USDC).balanceOf(address(burner));
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, routeData);
+
+        uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        uint256 feeAccrued = IERC20(FW_USDC).balanceOf(address(burner)) - burnerFwUsdcBefore;
+        assertGt(received, 0, "user receives USDC through calldata route");
+        assertGt(feeAccrued, 0, "burner accrues output-token fee");
+        assertEq(int256(delta.amount0()), -int256(amountIn), "delta.amount0 mismatch");
+        assertEq(int256(delta.amount1()), int256(received), "delta.amount1 mismatch");
+    }
+
+    function test_fork_calldataRoute_ETH_to_USDC_viaUSDT_exactOutput() public requireFork {
+        uint256 amountOut = 10_000;
+        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 1 ether);
+
+        vm.deal(USER, 1 ether);
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+        uint256 burnerFwUsdcBefore = IERC20(FW_USDC).balanceOf(address(burner));
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: true, amountSpecified: int256(amountOut), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        BalanceDelta delta = swapRouter.swap{value: 1 ether}(ethUsdcKey, params, settings, routeData);
+
+        uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+        uint256 feeAccrued = IERC20(FW_USDC).balanceOf(address(burner)) - burnerFwUsdcBefore;
+        assertEq(received, amountOut, "user receives exact output through calldata route");
+        assertGt(feeAccrued, 0, "burner accrues output-token fee");
+        assertEq(int256(delta.amount1()), int256(amountOut), "delta.amount1 mismatch");
+        assertLt(int256(delta.amount0()), 0, "delta.amount0 should be negative");
+    }
+
+    // ─────────── Liquidity is blocked ───────────
+
+    function test_fork_modifyLiquidityReverts_addPosition() public requireFork {
+        ModifyLiquidityParams memory params =
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 1e18, salt: bytes32(0)});
+        vm.expectRevert();
+        modifyRouter.modifyLiquidity(ethUsdcKey, params, "");
+    }
+
+    function test_fork_modifyLiquidityReverts_removePosition() public requireFork {
+        ModifyLiquidityParams memory params =
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: -1e18, salt: bytes32(0)});
+        vm.expectRevert();
+        modifyRouter.modifyLiquidity(ethUsdcKey, params, "");
+    }
+
+    // ─────────── Permissionless sweep ───────────
+
+    function test_fork_sweep_isPermissionlessAndSendsToFeeRecipient() public requireFork {
+        deal(USDC, address(hook), 1234e6);
+        vm.deal(address(hook), 0.5 ether);
+
+        uint256 feeRecipientUsdcBefore = IERC20(USDC).balanceOf(FEE_RECIPIENT);
+        uint256 feeRecipientEthBefore = FEE_RECIPIENT.balance;
+
+        address randomCaller = address(0xDEADBEEF);
+        vm.prank(randomCaller);
+        hook.sweep(USDC);
+
+        vm.prank(randomCaller);
+        hook.sweep(address(0));
+
+        assertEq(
+            IERC20(USDC).balanceOf(FEE_RECIPIENT) - feeRecipientUsdcBefore, 1234e6, "FEE_RECIPIENT receives swept USDC"
+        );
+        assertEq(FEE_RECIPIENT.balance - feeRecipientEthBefore, 0.5 ether, "FEE_RECIPIENT receives swept ETH");
+        assertEq(IERC20(USDC).balanceOf(address(hook)), 0, "Hook USDC drained");
+        assertEq(address(hook).balance, 0, "Hook ETH drained");
+    }
+
+    function test_fork_sweep_zeroBalanceNoOps() public requireFork {
+        vm.prank(address(0xBEEF));
+        hook.sweep(USDC);
+        vm.prank(address(0xBEEF));
+        hook.sweep(address(0));
+    }
+
+    // ─────────── Immutable invariants (compile-time guarantees) ───────────
+
+    function test_fork_feeRecipientIsImmutable() public requireFork {
+        assertEq(hook.feeRecipient(), FEE_RECIPIENT);
+    }
+
+    function test_fork_uniBurnerIsImmutable() public requireFork {
+        assertEq(hook.uniBurner(), address(burner));
+    }
+
+    function test_fork_protocolFeeBpsIsConstant() public requireFork {
+        assertEq(uint256(hook.PROTOCOL_FEE_BPS()), 5);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ADVERSARIAL / RED-TEAM
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ─── A. Direct-call attacks (verify onlyPoolManager) ───
+    // Defends against Cork Protocol $11M (2025-05): beforeSwap without onlyPoolManager.
+
+    function test_attack_directBeforeSwap_revertsNotPoolManager() public requireFork {
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        hook.beforeSwap(address(this), ethUsdcKey, p, "");
+    }
+
+    function test_attack_directBeforeInitialize_revertsNotPoolManager() public requireFork {
+        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        hook.beforeInitialize(address(this), ethUsdcKey, INIT_PRICE);
+    }
+
+    function test_attack_directBeforeAddLiquidity_revertsNotPoolManager() public requireFork {
+        ModifyLiquidityParams memory p =
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 1e18, salt: bytes32(0)});
+        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        hook.beforeAddLiquidity(address(this), ethUsdcKey, p, "");
+    }
+
+    // ─── B. ETH abuse (verify sweep recovers + no fund loss) ───
+
+    function test_attack_unsolicitedETH_isSweepableNotLost() public requireFork {
+        address attacker = address(0xBAD);
+        vm.deal(attacker, 5 ether);
+
+        vm.prank(attacker);
+        (bool ok,) = payable(address(hook)).call{value: 5 ether}("");
+        require(ok, "ETH transfer failed");
+
+        assertEq(address(hook).balance, 5 ether);
+
+        uint256 feeBefore = FEE_RECIPIENT.balance;
+
+        vm.prank(attacker);
+        hook.sweep(address(0));
+
+        assertEq(address(hook).balance, 0);
+        assertEq(FEE_RECIPIENT.balance, feeBefore + 5 ether);
+    }
+
+    function test_attack_selfdestructForcedETH_isSweepable() public requireFork {
+        vm.deal(address(this), 3 ether);
+        new SelfDestructAttacker{value: 3 ether}(payable(address(hook)));
+
+        assertEq(address(hook).balance, 3 ether);
+
+        uint256 feeBefore = FEE_RECIPIENT.balance;
+        hook.sweep(address(0));
+        assertEq(address(hook).balance, 0);
+        assertEq(FEE_RECIPIENT.balance, feeBefore + 3 ether);
+    }
+
+    // ─── C. Mocked-external-return attacks ───
+
+    function test_attack_wrapReturnsLess_revertsWrapMismatch() public requireFork {
+        vm.mockCall(FW_ETH, abi.encodeWithSelector(IFewWrappedToken.wrap.selector), abi.encode(uint256(0)));
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    function test_attack_wrapReturnsMore_revertsWrapMismatch() public requireFork {
+        vm.mockCall(FW_ETH, abi.encodeWithSelector(IFewWrappedToken.wrap.selector), abi.encode(type(uint256).max));
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    function test_attack_unwrapReturnsLess_revertsUnwrapMismatch() public requireFork {
+        vm.mockCall(FW_USDC, abi.encodeWithSelector(IFewWrappedToken.unwrap.selector), abi.encode(uint256(0)));
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    // ─── D. Pair sanity attacks (DegeneratePair / TokenMismatch) ───
+
+    function test_attack_pairZeroReserves_swapReverts() public requireFork {
+        vm.mockCall(
+            FEWV2_PAIR,
+            abi.encodeWithSelector(ISwapV2Pair.getReserves.selector),
+            abi.encode(uint112(0), uint112(0), uint32(block.timestamp))
+        );
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    function test_attack_pairAtMinimumLiquidity_revertsDegeneratePair() public requireFork {
+        vm.mockCall(
+            FEWV2_PAIR,
+            abi.encodeWithSelector(ISwapV2Pair.getReserves.selector),
+            abi.encode(uint112(1000), uint112(1000), uint32(block.timestamp))
+        );
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    function test_attack_pairOneSideAtSentinel_revertsDegeneratePair() public requireFork {
+        vm.mockCall(
+            FEWV2_PAIR,
+            abi.encodeWithSelector(ISwapV2Pair.getReserves.selector),
+            abi.encode(uint112(1000), uint112(1e18), uint32(block.timestamp))
+        );
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    function test_attack_pairJustAboveSentinel_noDegeneratePairRevert() public requireFork {
+        vm.mockCall(
+            FEWV2_PAIR,
+            abi.encodeWithSelector(ISwapV2Pair.getReserves.selector),
+            abi.encode(uint112(1001), uint112(1001), uint32(block.timestamp))
+        );
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -100, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        try swapRouter.swap{value: 100}(ethUsdcKey, p, s, "") {
+        // OK
+        }
+        catch (bytes memory reason) {
+            bytes4 sel;
+            if (reason.length >= 4) {
+                assembly { sel := mload(add(reason, 0x20)) }
+            }
+            assertTrue(
+                sel != RingAggregatorHook.DegeneratePair.selector,
+                "must not revert with DegeneratePair at 1001 wei reserves"
+            );
+        }
+
+        vm.clearMockedCalls();
+    }
+
+    function test_attack_pairLiesAboutToken0_revertsTokenMismatch() public requireFork {
+        vm.mockCall(FEWV2_PAIR, abi.encodeWithSelector(ISwapV2Pair.token0.selector), abi.encode(address(0xDEAD)));
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.5 ether}(ethUsdcKey, p, s, "");
+
+        vm.clearMockedCalls();
+    }
+
+    // ─── E. Calldata route validation / slippage red-team ───
+
+    function test_attack_calldataRoute_exactInput_minOutReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, type(uint256).max);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_exactOutput_maxInReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 1);
+
+        vm.deal(USER, 1 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: int256(1e6), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 1 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_zeroLimitReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 0);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_endpointMismatchReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_USDC, FW_USDT, FW_ETH, 1);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_nonCanonicalFewTokenReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_ETH, address(0xDEAD), FW_USDC, 1);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_nonDefaultIntermediateReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_ETH, FW_UNI, FW_USDC, 1);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_duplicateTokenReverts() public requireFork {
+        bytes memory routeData = _routeData4(FW_ETH, FW_USDT, FW_ETH, FW_USDC, 1);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    function test_attack_calldataRoute_missingPairReverts() public requireFork {
+        bytes memory routeData = _routeData3(FW_ETH, FW_USDR, FW_USDC, 1);
+
+        vm.deal(USER, 0.01 ether);
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        vm.expectRevert();
+        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
+    }
+
+    // ─── F. Reentrancy ───
+
+    function test_attack_sweepReentrancy_blockedByNonReentrant() public requireFork {
+        ReentrantSweepReceiver template = new ReentrantSweepReceiver(address(hook));
+        vm.etch(FEE_RECIPIENT, address(template).code);
+
+        vm.deal(address(hook), 1 ether);
+
+        vm.expectRevert();
+        hook.sweep(address(0));
+
+        assertEq(address(hook).balance, 1 ether, "ETH safe in hook, no partial drain");
+    }
+
+    // ─── G. Constructor zero-address checks ───
+
+    function _deployRaw(
+        address fewFactory_,
+        address fewV2Factory_,
+        address weth_,
+        address feeRecipient_,
+        address uniBurner_
+    ) internal {
+        _deployRawWithConnectors(fewFactory_, fewV2Factory_, weth_, feeRecipient_, uniBurner_, _defaultConnectors());
+    }
+
+    function _deployRawWithConnectors(
+        address fewFactory_,
+        address fewV2Factory_,
+        address weth_,
+        address feeRecipient_,
+        address uniBurner_,
+        address[6] memory defaultConnectors
+    ) internal {
+        new HookNoAddressCheck(
+            IPoolManager(V4_PM),
+            IFewFactory(fewFactory_),
+            ISwapV2Factory(fewV2Factory_),
+            IWETH9(weth_),
+            feeRecipient_,
+            uniBurner_,
+            defaultConnectors
+        );
+    }
+
+    function test_attack_constructor_zeroFewFactory_reverts() public requireFork {
+        vm.expectRevert(RingAggregatorHook.ZeroAddress.selector);
+        _deployRaw(address(0), RING_FACTORY, WETH, FEE_RECIPIENT, address(burner));
+    }
+
+    function test_attack_constructor_zeroFewV2Factory_reverts() public requireFork {
+        vm.expectRevert(RingAggregatorHook.ZeroAddress.selector);
+        _deployRaw(FEW_FACTORY, address(0), WETH, FEE_RECIPIENT, address(burner));
+    }
+
+    function test_attack_constructor_zeroWeth_reverts() public requireFork {
+        vm.expectRevert(RingAggregatorHook.ZeroAddress.selector);
+        _deployRaw(FEW_FACTORY, RING_FACTORY, address(0), FEE_RECIPIENT, address(burner));
+    }
+
+    function test_attack_constructor_zeroFeeRecipient_reverts() public requireFork {
+        vm.expectRevert(RingAggregatorHook.ZeroAddress.selector);
+        _deployRaw(FEW_FACTORY, RING_FACTORY, WETH, address(0), address(burner));
+    }
+
+    function test_attack_constructor_zeroUniBurner_reverts() public requireFork {
+        vm.expectRevert(RingAggregatorHook.ZeroAddress.selector);
+        _deployRaw(FEW_FACTORY, RING_FACTORY, WETH, FEE_RECIPIENT, address(0));
+    }
+
+    function test_attack_constructor_nonCanonicalDefaultConnector_reverts() public requireFork {
+        address[6] memory connectors = _defaultConnectors();
+        connectors[5] = address(0xDEAD);
+
+        vm.expectRevert();
+        _deployRawWithConnectors(FEW_FACTORY, RING_FACTORY, WETH, FEE_RECIPIENT, address(burner), connectors);
+    }
+
+    function test_attack_constructor_duplicateDefaultConnector_reverts() public requireFork {
+        address[6] memory connectors = _defaultConnectors();
+        connectors[5] = FW_USDC;
+
+        vm.expectRevert(abi.encodeWithSelector(RingAggregatorHook.DuplicateRouteToken.selector, FW_USDC));
+        _deployRawWithConnectors(FEW_FACTORY, RING_FACTORY, WETH, FEE_RECIPIENT, address(burner), connectors);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // UNI burn (5 bps protocol fee) behavior
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// @notice ExactInput: burner accrues exactly 5 bps of the gross fwUSDC output.
+    function test_fork_uniBurn_exactInput_5bps_skim() public requireFork {
+        uint256 ethIn = 0.5 ether;
+        vm.deal(USER, ethIn);
+
+        uint256 burnerFwUsdcBefore = IERC20(FW_USDC).balanceOf(address(burner));
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(ethIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: ethIn}(ethUsdcKey, p, s, "");
+
+        uint256 burnerSkimmed = IERC20(FW_USDC).balanceOf(address(burner)) - burnerFwUsdcBefore;
+        uint256 userReceived = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+
+        uint256 grossFwOut = burnerSkimmed + userReceived;
+        uint256 expectedSkim = (grossFwOut * 5) / 10000;
+
+        assertEq(burnerSkimmed, expectedSkim, "burner skim must equal 5 bps of gross output");
+        assertGt(burnerSkimmed, 0, "burner must accrue fee");
+        assertLt(userReceived, grossFwOut, "user must pay fee");
+    }
+
+    /// @notice ExactOutput: user receives the exact target; burner accrues 5 bps from the grossed-up route.
+    function test_fork_uniBurn_exactOutput_userReceivesTarget() public requireFork {
+        uint256 usdcTarget = 100e6;
+        vm.deal(USER, 5 ether);
+
+        uint256 burnerBefore = IERC20(FW_USDC).balanceOf(address(burner));
+        uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
+
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: int256(usdcTarget), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: 5 ether}(ethUsdcKey, p, s, "");
+
+        uint256 burnerSkimmed = IERC20(FW_USDC).balanceOf(address(burner)) - burnerBefore;
+        uint256 userReceived = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
+
+        assertEq(userReceived, usdcTarget, "user must receive exact amountOut target");
+        assertGt(burnerSkimmed, 0, "burner must accrue fee even for exact-out");
+        uint256 approxExpected = (usdcTarget * 5) / 9995;
+        assertApproxEqRel(burnerSkimmed, approxExpected, 0.2e18, "skim within 20% of analytical estimate");
+    }
+
+    /// @notice Fee accounting: gross output = user output + burner skim. No tokens lost.
+    function test_fork_uniBurn_noTokensLost_exactInput() public requireFork {
+        uint256 ethIn = 0.3 ether;
+        vm.deal(USER, ethIn);
+
+        uint256 hookFwBefore = IERC20(FW_USDC).balanceOf(address(hook));
+
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(ethIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: ethIn}(ethUsdcKey, p, s, "");
+
+        uint256 hookFwDelta = IERC20(FW_USDC).balanceOf(address(hook)) - hookFwBefore;
+
+        assertEq(hookFwDelta, 0, "hook must not retain fwUSDC dust on exact-in");
+    }
+
+    /// @notice UniFeeAccrued event is emitted on each swap.
+    function test_fork_uniBurn_emitsUniFeeAccruedEvent() public requireFork {
+        uint256 ethIn = 0.1 ether;
+        vm.deal(USER, ethIn);
+
+        vm.expectEmit(true, true, false, false, address(hook));
+        emit RingAggregatorHook.UniFeeAccrued(ethUsdcKey.toId(), FW_USDC, 0);
+
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(ethIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: ethIn}(ethUsdcKey, p, s, "");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // End-to-end: hook -> RingUniBurner -> mainnet Uniswap TokenJar
+    // (No rotation step in V1 — uniBurner is wired at construction in setUp.)
+    // ════════════════════════════════════════════════════════════════════════
+
+    function test_fork_endToEnd_skimToTokenJar() public requireFork {
+        uint256 ethIn = 1 ether;
+        vm.deal(USER, ethIn);
+
+        uint256 jarUsdcBefore = IERC20(USDC).balanceOf(TOKEN_JAR_MAINNET);
+
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(ethIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: ethIn}(ethUsdcKey, p, s, "");
+
+        uint256 burnerFwBalance = IERC20(FW_USDC).balanceOf(address(burner));
+        assertGt(burnerFwBalance, 0, "burner accrued fwUSDC");
+
+        // Anyone can call flush — prove permissionless.
+        address keeper = address(0xDA02);
+        vm.prank(keeper);
+        uint256 forwarded = burner.flush(FW_USDC);
+
+        assertEq(forwarded, burnerFwBalance, "all fwUSDC unwrapped + forwarded");
+        assertEq(
+            IERC20(USDC).balanceOf(TOKEN_JAR_MAINNET) - jarUsdcBefore,
+            burnerFwBalance,
+            "TokenJar received exactly the unwrapped USDC"
+        );
+        assertEq(IERC20(FW_USDC).balanceOf(address(burner)), 0, "no fwUSDC left in burner");
+        assertEq(IERC20(USDC).balanceOf(address(burner)), 0, "no USDC dust in burner");
+    }
+
+    function test_fork_endToEnd_flushZeroBalance_noOp() public requireFork {
+        // Empty burner; just call flush — should return 0 and not revert.
+        RingUniBurner emptyBurner = new RingUniBurner(TOKEN_JAR_MAINNET, FEW_FACTORY, BURNER_OWNER);
+        uint256 forwarded = emptyBurner.flush(FW_USDC);
+        assertEq(forwarded, 0);
+    }
+
+    function test_fork_endToEnd_multipleSwapsBatchedFlush() public requireFork {
+        uint256 jarBefore = IERC20(USDC).balanceOf(TOKEN_JAR_MAINNET);
+
+        SwapParams memory p =
+            SwapParams({zeroForOne: true, amountSpecified: -0.3 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        for (uint256 i = 0; i < 3; ++i) {
+            vm.deal(USER, 0.3 ether);
+            vm.prank(USER);
+            swapRouter.swap{value: 0.3 ether}(ethUsdcKey, p, s, "");
+        }
+
+        uint256 burnerAccumulated = IERC20(FW_USDC).balanceOf(address(burner));
+        assertGt(burnerAccumulated, 0, "burner accrued from 3 swaps");
+
+        burner.flush(FW_USDC);
+
+        assertEq(
+            IERC20(USDC).balanceOf(TOKEN_JAR_MAINNET) - jarBefore,
+            burnerAccumulated,
+            "all 3 swaps' fee accumulation reached TokenJar in one flush"
+        );
+        assertEq(IERC20(FW_USDC).balanceOf(address(burner)), 0);
+    }
+}

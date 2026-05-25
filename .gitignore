@@ -1,0 +1,40 @@
+# ─── Foundry build artifacts ───
+cache/
+out/
+broadcast/
+
+# ─── Dependency directories ───
+node_modules/
+
+# ─── Environment secrets ───
+.env
+.env.*
+!.env.example
+
+# ─── Coverage reports ───
+lcov.info
+coverage/
+*.lcov
+
+# ─── AI agent / dev tool runtime state ───
+# These contain tool error dumps, session metadata, command history — never
+# meant to be tracked in source control. Keep AI-generated *content* under
+# docs/ (which is tracked), but exclude tool-runtime state.
+.omc/
+.claude/
+.cursor/
+.windsurf/
+.aider*
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+
+# ─── Logs ───
+*.log

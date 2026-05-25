@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "audit/**", "baseline-0bps"]
+  pull_request:
+    branches: [main]
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  build-and-test:
+    name: Build + hermetic tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Show forge version
+        run: forge --version
+
+      - name: Build
+        run: forge build --sizes
+
+      - name: Hermetic tests (no RPC required)
+        # Unit + invariant suites only. Fork tests run in the
+        # fork-tests job below (needs the ETH_RPC_URL secret).
+        run: forge test --no-match-path "test/fork/*" -vvv
+
+  fork-tests:
+    name: Mainnet fork tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Fork tests
+        # Requires repo secret ETH_RPC_URL (archive node).
+        # If the secret is absent (e.g. on a fork PR), the suite
+        # self-skips via the `requireFork` modifier - it will not fail CI.
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: forge test --match-path "test/fork/*" -vvv
+
+  slither:
+    name: Slither static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Slither
+        uses: crytic/slither-action@v0.4.0
+        with:
+          target: "."
+          # All 28 detector hits are triaged in docs/SLITHER_TRIAGE.md
+          # (0 real findings). CI must not gate on triaged informational
+          # output, but Slither still runs and its log is reviewable.
+          fail-on: none
+          slither-args: >-
+            --filter-paths "lib/|test/|script/"
+            --exclude naming-convention,solc-version,pragma
+
+  formatting:
+    name: forge fmt check
+    runs-on: ubuntu-latest
+    # Code is canonical `forge fmt`-clean; this gates (ecosystem standard
+    # for audited Foundry repos — v4-core/v4-periphery are fmt-clean too).
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+      - name: Check formatting
+        run: forge fmt --check
