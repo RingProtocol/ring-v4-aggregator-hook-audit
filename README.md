@@ -1,190 +1,181 @@
 # ring-v4-aggregator-hook-audit
 
-Clean-history public audit mirror for Ring's Uniswap V4 aggregator hook.
+Clean-history public audit mirror for Ring's Uniswap v4 aggregator hook.
 
-A Uniswap V4 **aggregator hook** that exposes Ring's FewV2 AMM liquidity (~$130M TVL across 7 chains) as native V4 pools. The Universal Router and V4 Quoter discover and use it as primitive `(tokenA, tokenB)` pools — under the hood every swap is routed through Ring's existing fewV2 AMM.
+This hook exposes Ring's existing FewV2 liquidity as Uniswap v4 swapable pools. A Uniswap swap such as `ETH -> USDC` can be settled by the hook through the matching `fwETH/fwUSDC` FewV2 pair, while the user only sees the underlying tokens.
 
-> **Naming**: follows the Uniswap V4 ecosystem convention `<protocol>-v4-<purpose>-hook` (sibling to Ring's `ring-v4-periphery`).
-> **Status**: audit `main` branch, promoted from `ownerless-calldata-route` · frozen by tag `audit-ownerless-calldata-route-2026-05-25-r3` · 88/88 tests passing · V4Quoter empty-hookData fork tests passing · calldata-route red-team pass complete.
-
----
-
-## Architecture (one line)
-
-```
-V4 swap (tokenA → tokenB)  →  Hook.beforeSwap  →  wrap A  →  fewV2.swap(fewA → fewB)  →  unwrap B  →  settle
-```
-
-The V4 pool holds **zero liquidity**. All liquidity comes from FewV2 pairs. The hook is purely a routing translation layer that `beforeSwapReturnDelta`-absorbs the swap before the V4 AMM loop runs.
-
-This is the same pattern as:
-- Uniswap Labs' Tempo aggregator hook (first production deployment, March 2026)
-- Aligned with the [UNIfication governance proposal](https://blog.uniswap.org/unification) (passed Dec 2025)
+> **Status**: `audit-r3-direct-only-sor` branch. Direct-only ownerless hook, 73/73 tests passing, V4Quoter fork tests passing, Slither triaged at 7 findings / 0 real issues.
 
 ---
 
-## Permission model — the hook is ownerless
+## Architecture
 
-The hook has **no owner, no admin functions, no pause, no upgrade path**. Once deployed, its behaviour is fully determined by immutable constructor wiring (`fewFactory`, `fewV2Factory`, `weth`, `feeRecipient`, `uniBurner`) and the on-chain state of the FewV2 pairs it routes through. This is the Universal-Router philosophy: a thin, immutable, permissionless routing layer.
+```text
+V4 swap (tokenA -> tokenB)
+  -> Hook.beforeSwap
+  -> wrap tokenA to fewA
+  -> direct FewV2 pair swap (fewA -> fewB)
+  -> skim 5 bps fewB fee to RingUniBurner
+  -> unwrap fewB to tokenB
+  -> settle through PoolManager
+```
+
+The v4 pool holds zero liquidity. All liquidity comes from the direct FewV2 pair for the two pool endpoints.
+
+Multi-hop price improvement is intentionally left to Uniswap routing. If `A -> X -> B` is better than `A -> B`, the router can compose two v4 pools and call the hook twice: once for `A -> X`, then once for `X -> B`. This keeps the hook small and removes the in-hook connector search / calldata path surface.
+
+---
+
+## Permission Model
+
+`RingAggregatorHook` is ownerless:
+
+- no owner
+- no admin functions
+- no pause
+- no upgrade path
+- no admin route registry
+- no connector whitelist
+- no user-supplied pair addresses
+
+Routing is fixed by immutable constructor wiring and live FewV2 pair state. Each v4 pool maps to one direct FewV2 pair derived from `fewV2Factory`.
 
 | Concern | Design |
 |---|---|
-| Routing | Empty `hookData`: built-in default router compares direct FewV2 route plus a fixed deploy-time connector set (`fwWETH`, `fwWBTC`, `fwUSDC`, `fwUSDT`, `fwDAI`, `fwUSDR`) and chooses the best quote. Non-empty `hookData`: per-swap FewToken path, but intermediates are restricted to the same fixed connector set and retain hook-level slippage bounds. No admin-registered routes. |
-| Liquidity source | `fewV2Factory` is **immutable** — multi-year-stable core infra; a migration is handled by redeploying the hook, not a setter (see the contract NatSpec for the full rationale). |
-| Protocol fee | `PROTOCOL_FEE_BPS = 5` constant. 5 bps of gross fewToken output -> immutable `uniBurner` -> Uniswap TokenJar. Firepit, governed by Uniswap, handles the downstream UNI burn. |
-| Emergency | No pause. Defence is layered: per-swap reverts (`DegeneratePair` / `WrapMismatch` / caller slippage) + routing-layer delist. |
-| Sweep | `sweep(token)` is permissionless; destination locked to the immutable `feeRecipient`. |
+| Routing | Direct FewV2 pair only. `hookData` is ignored for routing so default router / quoter integrations do not need Ring-specific calldata. |
+| Liquidity source | `fewFactory` and `fewV2Factory` are immutable. FewTokens and pairs are derived on-chain. |
+| Protocol fee | `PROTOCOL_FEE_BPS = 5`. Gross output fee is sent to immutable `uniBurner`. |
+| Fee pipeline | Ring pushes fees into Uniswap's TokenJar via `RingUniBurner`; Uniswap's Firepit handles the downstream UNI burn. |
+| Emergency | The hook has no pause. Failure response is per-swap revert, routing-layer delist, or redeploy. |
+| Sweep | `sweep(token)` is permissionless and always sends to immutable `feeRecipient`. |
 
-The only privileged key in the system is the **RingUniBurner owner** — a *separate* fee adapter that receives the 5 bps before `flush()` pushes it to TokenJar. Its worst-case power is diverting *already-accrued protocol fees* (never user funds, never routing). Production owner must be a Gnosis Safe with a timelock before meaningful volume. See [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md).
-
-For this audit build's calldata-route ABI, validation model, red-team tests, and Slither triage, see [`docs/CALLDATA_ROUTE_SECURITY.md`](docs/CALLDATA_ROUTE_SECURITY.md). The historical `ownerless` branch remains the smaller direct-route package, while the pre-ownerless `main` branch is archived as `archive/pre-ownerless-main-2026-05-25`.
-
-For the 3-anchor (mathematical / political / economic) rationale of the 5 bps choice, see [`docs/UNI_BURN_NOTES.md`](docs/UNI_BURN_NOTES.md). For how a Uniswap user's swap actually reaches FewV2 (shell pool, `initialize` ≠ add liquidity, hooklist vs allowlist), see [`docs/GO_LIVE_MECHANICS.md`](docs/GO_LIVE_MECHANICS.md).
+The only privileged key is `RingUniBurner.owner`, on a separate fee adapter. Its scope is limited to accrued protocol fees held by the burner, never user swap funds. See [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md).
 
 ---
 
-## Documentation map
+## Audit Scope
 
-> First-time reader / CEO / CTO: start here.
+The Ring-written production review surface is intentionally small:
 
-| File | Audience | Read time |
-|---|---|---|
-| `README.md` (this file) | Everyone | 5 min |
-| [`docs/GO_LIVE_MECHANICS.md`](docs/GO_LIVE_MECHANICS.md) | Everyone | 10 min — how a user's swap reaches FewV2: shell pool, `initialize` ≠ add liquidity, hooklist vs allowlist |
-| [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md) | CEO / Auditor | 15 min — the hook has no owner; this inventories the one residual privileged key (the RingUniBurner owner) and its bounded blast radius |
-| [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Auditor | 20 min — every Slither finding triaged, 0 real issues |
-| [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) | Auditor | 10 min — per-file coverage report |
-| [`docs/UNI_BURN_NOTES.md`](docs/UNI_BURN_NOTES.md) | Auditor / Engineer | 25 min — 3-anchor 5 bps rationale + TokenJar/Firepit architecture |
+| Contract | nSLOC | Role |
+|---|---:|---|
+| `src/RingAggregatorHook.sol` | 312 | Direct-only ownerless v4 hook |
+| `src/RingUniBurner.sol` | 54 | TokenJar push-source adapter |
+| `src/lib/FewV2Math.sol` | 29 | V2 `getAmountOut` / `getAmountIn` math |
+| **Total** | **395** | |
 
-Technical deep-dives (all in-repo, self-contained):
-- [`docs/DESIGN.md`](docs/DESIGN.md) — full architecture spec
-- [`docs/RATIONALE.md`](docs/RATIONALE.md) — why every design decision
-- [`docs/CALLDATA_ROUTE_SECURITY.md`](docs/CALLDATA_ROUTE_SECURITY.md) — calldata-route ABI, validation, and red-team coverage
-- [`docs/DEPLOYMENT_FLOW.md`](docs/DEPLOYMENT_FLOW.md) — audit-to-deploy roadmap
-- [`docs/INDEX.md`](docs/INDEX.md) — one-page map of every doc by audience
+Interfaces, tests, scripts, docs, and pinned third-party dependencies are out of production scope. See [`AUDIT_SCOPE.md`](AUDIT_SCOPE.md).
+
+---
+
+## Documentation Map
+
+| File | Purpose |
+|---|---|
+| [`AUDIT_SCOPE.md`](AUDIT_SCOPE.md) | External-audit package: in scope, out of scope, nSLOC, questions |
+| [`docs/DIRECT_ONLY_ROUTING.md`](docs/DIRECT_ONLY_ROUTING.md) | Direct-only routing model and why SOR composes multi-hop paths |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture reference |
+| [`docs/RATIONALE.md`](docs/RATIONALE.md) | Design decisions and rejected alternatives |
+| [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | 7 Slither findings triaged, 0 real issues |
+| [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) | Coverage and test matrix |
+| [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md) | Residual key analysis for `RingUniBurner.owner` |
+| [`docs/UNI_BURN_NOTES.md`](docs/UNI_BURN_NOTES.md) | 5 bps TokenJar / Firepit fee path |
+| [`docs/GO_LIVE_MECHANICS.md`](docs/GO_LIVE_MECHANICS.md) | How swaps reach the hook after listing / routing integration |
+| [`docs/DEPLOYMENT_FLOW.md`](docs/DEPLOYMENT_FLOW.md) | Audit-to-deploy roadmap |
+| [`docs/INDEX.md`](docs/INDEX.md) | One-page documentation guide |
 
 ---
 
 ## Layout
 
-```
+```text
 src/
-├── RingAggregatorHook.sol        # main hook contract (~774 LOC, ownerless)
-├── RingUniBurner.sol             # TokenJar push-source adapter (~157 LOC, owner-managed)
-├── interfaces/
-│   ├── IFewWrappedToken.sol      # Ring fewToken wrap/unwrap
-│   ├── IFewFactory.sol           # token → fewToken lookup
-│   └── IFewV2.sol                # ISwapV2Pair / ISwapV2Factory
-├── lib/
-│   └── FewV2Math.sol             # V2 getAmountOut + getAmountIn (30 bps fee)
-├── utils/
-│   └── BaseHook.sol              # minimal inlined v4-periphery BaseHook
-└── base/
-    └── DeltaResolver.sol         # minimal inlined take/settle helper
+├── RingAggregatorHook.sol        # main direct-only hook, ownerless
+├── RingUniBurner.sol             # TokenJar push-source adapter, owner-managed
+├── interfaces/external/          # ABI-only references
+└── lib/FewV2Math.sol             # V2 quote math
 
 test/
-├── unit/                         # 25 hermetic unit tests (10 FewV2Math + 15 RingUniBurner)
-├── invariant/                    # 5 property-fuzz invariants (fee math, gross-up, sentinel)
-└── fork/                         # 58 mainnet-fork e2e + adversarial tests
+├── unit/                         # 21 unit tests
+├── invariant/                    # 5 property-fuzz tests
+└── fork/                         # 47 mainnet-fork integration/adversarial tests
 
 script/
-├── DeployUniBurner.s.sol         # deploy RingUniBurner via CREATE2
-├── MineHookAddress.s.sol         # CREATE2 salt search for permission flags 0x2888
-└── DeployMainnet.s.sol           # deploy hook + init ETH/USDC pool
+├── DeployUniBurner.s.sol
+├── MineHookAddress.s.sol
+└── DeployMainnet.s.sol
 
 docs/
-├── INDEX.md                      # one-page guide to every doc by audience
-├── DESIGN.md                     # full architecture spec
-├── RATIONALE.md                  # why every design decision
-├── GO_LIVE_MECHANICS.md          # how a user's swap reaches FewV2
-├── UNI_BURN_NOTES.md             # 5 bps + TokenJar/Firepit architecture
-├── CALLDATA_ROUTE_SECURITY.md    # calldata-route ABI, validation, red-team coverage
-├── SLITHER_TRIAGE.md             # static analysis triage (0 real findings)
-├── TEST_COVERAGE.md              # per-file forge coverage report
-├── OWNER_KEY_COMPROMISE.md       # residual-key (RingUniBurner owner) threat model
-├── DEPLOYMENT_FLOW.md            # current-state → routing-api roadmap
-└── MECHANISM_PROVENANCE.md       # every mechanism traced to a battle-tested precedent
-
-# Audit-submission package (repo root):
-#   AUDIT_SCOPE.md  KNOWN_ISSUES.md  SECURITY.md
+├── DIRECT_ONLY_ROUTING.md
+├── DESIGN.md
+├── RATIONALE.md
+├── SLITHER_TRIAGE.md
+├── TEST_COVERAGE.md
+├── OWNER_KEY_COMPROMISE.md
+├── UNI_BURN_NOTES.md
+├── GO_LIVE_MECHANICS.md
+├── DEPLOYMENT_FLOW.md
+├── MECHANISM_PROVENANCE.md
+└── INDEX.md
 ```
 
 ---
 
-## Build & test
+## Build And Test
 
-### Prerequisites
-- [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge` `cast` `anvil`)
-- An archive Ethereum mainnet RPC URL (Alchemy / Infura / your own node) — only needed for fork tests
+Prerequisites:
 
-### Initial setup
+- Foundry
+- An Ethereum mainnet RPC URL for fork tests
+
 ```sh
 git clone --recurse-submodules git@github.com:RingProtocol/ring-v4-aggregator-hook-audit.git
 cd ring-v4-aggregator-hook-audit
+git checkout audit-r3-direct-only-sor
 git submodule update --init --recursive
-forge install
-```
-
-### Build
-```sh
 forge build
 ```
 
-Compiles with Solidity `0.8.26`, `via_ir = true`, optimizer 200 runs, EVM Cancun. See [`foundry.toml`](foundry.toml).
-
-### Run tests
+Hermetic tests:
 
 ```sh
-# unit tests only (25 tests, hermetic, fast)
-forge test --match-path "test/unit/*"
-
-# all tests including mainnet fork (88 total: 25 unit + 5 invariant + 58 fork)
-ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY  forge test
+forge test --offline --no-match-path "test/fork/*"
 ```
 
-Fork tests auto-skip when `ETH_RPC_URL` is unset (so CI without an RPC stays green).
+Full suite:
 
-### Static analysis
-
-Slither + solc-select setup:
 ```sh
-pip3 install --user slither-analyzer solc-select
-solc-select install 0.8.26
-solc-select use 0.8.26
-export PATH="$HOME/Library/Python/3.9/bin:$PATH"
-
-slither . --filter-paths "lib/|test/|script/" \
-          --exclude naming-convention,solc-version,pragma
+ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY forge test
 ```
 
-See [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) — all detector hits triaged (0 real findings).
+Static analysis:
+
+```sh
+uvx --from slither-analyzer slither . \
+  --filter-paths "lib/|test/|script/" \
+  --exclude naming-convention,solc-version,pragma
+```
 
 ---
 
 ## Deploy
 
-Three-script flow:
-
 ```sh
-# 1. Deploy RingUniBurner (CREATE2, same address across chains).
-#    OWNER_ADDRESS is the BURNER's owner (the hook itself is ownerless) — use a multisig.
-OWNER_ADDRESS=0x...   forge script script/DeployUniBurner.s.sol  \
-                                  --rpc-url $RPC --broadcast --via-ir
+# 1. Deploy RingUniBurner. OWNER_ADDRESS is the burner owner, not the hook owner.
+OWNER_ADDRESS=0x... forge script script/DeployUniBurner.s.sol \
+  --rpc-url $RPC --broadcast --via-ir
 
-# 2. Mine hook CREATE2 salt (hook takes NO owner arg)
-UNI_BURNER_ADDRESS=0x... FEE_RECIPIENT_ADDRESS=0x...  \
-                       forge script script/MineHookAddress.s.sol --via-ir
+# 2. Mine a hook CREATE2 salt.
+UNI_BURNER_ADDRESS=0x... FEE_RECIPIENT_ADDRESS=0x... \
+  forge script script/MineHookAddress.s.sol --via-ir
 
-# 3. Deploy hook + initialize ETH/USDC pool (hook takes NO owner arg)
-HOOK_SALT=0x... EXPECTED_HOOK_ADDRESS=0x... UNI_BURNER_ADDRESS=0x...        \
-FEE_RECIPIENT_ADDRESS=0x...                                                \
-                       forge script script/DeployMainnet.s.sol             \
-                                    --rpc-url $RPC --broadcast --via-ir
+# 3. Deploy hook and initialize ETH/USDC pool.
+HOOK_SALT=0x... EXPECTED_HOOK_ADDRESS=0x... \
+UNI_BURNER_ADDRESS=0x... FEE_RECIPIENT_ADDRESS=0x... \
+  forge script script/DeployMainnet.s.sol --rpc-url $RPC --broadcast --via-ir
 ```
 
-The deploy script runs post-deploy state assertions for all immutables (`feeRecipient`, `uniBurner`, `fewFactory`, `fewV2Factory`, `weth`, `PROTOCOL_FEE_BPS == 5`, and all 6 default connectors) before exiting. Failure on any assertion aborts.
-
-**The hook is ownerless** — there is nothing to transfer after deploy. The only key to secure is the **RingUniBurner owner**: transfer it to a Gnosis Safe 3/5+ multisig before any meaningful volume flows. See [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md).
+The hook has no owner to transfer after deployment. The burner owner must be transferred to a Gnosis Safe with a timelock before meaningful volume.
 
 ---
 
@@ -192,27 +183,14 @@ The deploy script runs post-deploy state assertions for all immutables (`feeReci
 
 | Item | State |
 |---|---|
-| Code complete | ✅ |
-| Slither static analysis | ✅ 27 hits reviewed on this branch; fixed-connector auto-routing and bounded calldata `calls-loop` findings are expected/by-design ([branch notes](docs/CALLDATA_ROUTE_SECURITY.md)) |
-| Tests | ✅ 88/88 (25 unit + 5 invariant + 58 fork) |
-| Adversarial tests | ✅ included in the fork suite (Cork-style direct-call, Bunni-style lying fewToken, force-fed ETH, reentrant sweep, degenerate pair, default-connector constructor checks, V4Quoter empty-hookData exact-in/out, calldata-route endpoint/fake-token/duplicate/missing-pair/slippage cases, etc.) |
-| Known-issues triage | ✅ [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) |
-| Residual-key risk doc | ✅ [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md) |
-| External professional audit | ⬜ pending (Cantina lite / Spearbit / Code4rena) |
-| Multisig for RingUniBurner owner | ⬜ pending — Gnosis Safe 3/5+ with timelock before mainnet |
-| Monitoring live | ⬜ pending before mainnet |
-| Mainnet deployment | ⬜ pending audit + multisig |
-| Submit to Uniswap hooklist | ⬜ pending deployment |
-| Submit to Uniswap routing-api | ⬜ pending hooklist + 30d on-chain history |
-| Hooks Marketplace application | ⬜ pending routing-api merge + Marketplace open |
-
----
-
-## Pre-deploy blockers (non-negotiable)
-
-1. **External audit** — at least 1 professional firm (Cantina / Spearbit / Code4rena) signs off with a public report. All Critical/High/Medium findings fixed.
-2. **Multisig + timelock for the RingUniBurner owner** — the hook is ownerless, but the burner (which temporarily custodies accrued 5 bps fees) is owner-managed. Its owner must be a Gnosis Safe 3/5+ with a timelock before any meaningful volume.
-3. **Monitoring live** — all 3 channels (Tenderly / Etherscan / OpenZeppelin Defender) running before deploy day.
+| Code complete | Yes |
+| Tests | 73/73 passing |
+| V4Quoter fork coverage | Exact-input and exact-output direct route tests passing |
+| Slither | 7 findings triaged, 0 real issues |
+| Hook admin surface | None |
+| External audit | Pending |
+| Multisig for `RingUniBurner.owner` | Pending before mainnet |
+| Uniswap hooklist / routing-api submission | Pending audit and deployment |
 
 ---
 
@@ -220,14 +198,13 @@ The deploy script runs post-deploy state assertions for all immutables (`feeReci
 
 | Topic | Link |
 |---|---|
-| UNIfication governance proposal | https://blog.uniswap.org/unification |
 | Uniswap official hooklist registry | https://github.com/Uniswap/hooklist |
 | Uniswap protocol-fees (TokenJar + Firepit) | https://github.com/Uniswap/protocol-fees |
 | Ring's prior Uniswap routing-api PR | https://github.com/Uniswap/routing-api/pull/1302 |
-| V4 hook flag specification | https://github.com/Uniswap/v4-core/blob/main/src/libraries/Hooks.sol |
+| V4 hook flags | https://github.com/Uniswap/v4-core/blob/main/src/libraries/Hooks.sol |
 
 ---
 
 ## License
 
-GPL-2.0-or-later (matches Uniswap V4 core).
+GPL-2.0-or-later.

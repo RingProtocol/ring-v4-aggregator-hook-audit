@@ -1,263 +1,201 @@
-# Ring V4 Aggregator Hook — Ownerless Rationale
+# Ring V4 Aggregator Hook - Direct-Only Rationale
 
-> Last updated: 2026-05-25
+> Last updated: 2026-05-29
 > Audience: auditor, reviewer, protocol engineer
-> Companion docs: `DESIGN.md`, `AUDIT_SCOPE.md`, `KNOWN_ISSUES.md`, `OWNER_KEY_COMPROMISE.md`
-
-> Branch note: this rationale describes the `ownerless-calldata-route` audit
-> package: no admin model, empty-hookData default auto-routing, and bounded
-> calldata routes. Read `CALLDATA_ROUTE_SECURITY.md` for the route-specific
-> validation and red-team pass.
 
 ---
 
 ## 1. TL;DR
 
-The ownerless build intentionally removes every hook-level governance lever:
-
-- No owner
-- No pause
-- No custom route registry
-- No route timelock
-- No burner rotation
-- No fee setter
-- No sweep recipient setter
-- No upgrade path
-
-The result is a smaller and easier-to-audit adapter:
+This branch makes the hook smaller by removing the in-hook route engine. The hook now executes only the direct FewV2 pair for the v4 pool endpoints.
 
 ```text
-input token -> FewToken.wrap -> direct or fixed-connector FewV2 route -> skim 5 bps -> FewToken.unwrap -> output token
+input token -> FewToken.wrap -> direct FewV2 pair -> skim 5 bps -> FewToken.unwrap -> output token
 ```
 
-The main design decision is philosophical as much as technical: if a feature requires a powerful key, the feature is not in V1. Redeploying a new hook is preferred over shipping dormant admin power.
+If `A -> X -> B` is a better route, Uniswap routing should compose that as two v4 pool hops. This keeps useful routing available while removing connector search, path decoding, and multi-hop loops from the hook contract itself.
 
 ---
 
 ## 2. Why Ownerless
 
-The earlier branch kept a minimal owner for operational convenience. That still left reviewers with the wrong core question:
+The hook is intended to be acceptable to routers and Uniswap-facing review processes. Those reviewers should not need to trust a Ring admin key for the swap path.
 
-> "What can the owner do if compromised?"
+`RingAggregatorHook` therefore has:
 
-The ownerless branch changes the premise:
+- no owner
+- no pause
+- no fee setter
+- no route registry
+- no connector admin
+- no burner rotation
+- no upgrade path
 
-> "What can the hook do after deployment?"
-
-For `RingAggregatorHook`, the answer is fixed by bytecode, constructor arguments, and live FewV2 pair state. There is no human key that can change routing, pause swaps, redirect fees, upgrade logic, or rewrite parameters.
-
-This is especially important for a Uniswap routing-api integration. A router allowlist should not need to trust Ring to keep an admin key safe for the swap path. It should only need to review the deployed bytecode and immutable wiring.
+If an immutable address or design assumption needs to change, the remedy is redeploy and re-list, not mutate the deployed hook.
 
 ---
 
-## 3. Why Bounded Default Routing
+## 3. Why Direct-Only
 
-A fully open multi-hop aggregator inside `beforeSwap` sounds useful, but it creates unnecessary risk:
+The prior calldata-route package solved routing inside the hook. That was powerful, but it increased audit surface:
 
-- More external calls inside a v4 hook
-- More rounding surfaces
-- Larger gas and revert surface
-- More complex exact-output quoting
-- A need to choose intermediate assets
-- Pressure to add an admin route registry
+- connector immutables
+- default route search
+- path calldata ABI
+- hook-level route limits
+- duplicate token / pair validation
+- multi-hop execution loops
+- exact-output backward quote loops
 
-The calldata-route branch keeps the useful part and removes the dangerous part:
+The direct-only branch removes those surfaces.
+
+The product bet is that Uniswap SOR can compose multiple hook pools. For example, if `fwETH/fwUSDC/fwWBTC` is better than `fwETH/fwWBTC`, then routing can call:
 
 ```text
-No admin route registry.
-No user-supplied pair addresses.
-No arbitrary hidden intermediate assets.
-Only direct + six immutable, canonical FewToken connectors by default.
+ETH -> USDC via hook pool 1
+USDC -> WBTC via hook pool 2
 ```
 
-This specifically serves the Uniswap classic-router goal: with `hookData == ""`, the official V4Quoter can ask the hook for a price without any Ring-specific calldata and still receive the best direct-or-connector quote. Advanced integrators can pass `hookData`, but intermediates stay inside the same connector set and amount limits are enforced in the hook.
+Each hop still contributes volume to Ring's FewV2 liquidity.
 
 ---
 
-## 4. Why No Pause
+## 4. Why Ignore `hookData`
 
-A pause function is often described as safety equipment. In this hook it would mostly be a governance attack surface.
+The direct-only branch has no route data to decode. Reverting on non-empty `hookData` would create integration fragility for routers or quoting tools that pass bytes through by default.
 
-The hook does not custody LP inventory and has no mutable route book. If a FewV2 pair, connector route, or FewToken is unhealthy, the likely response is:
+Ignoring it is deterministic:
 
-1. The swap reverts through existing checks (`DegeneratePair`, `TokenMismatch`, wrapper mismatch, or user slippage), or
-2. The router/hooklist delists the affected hook/pool, or
-3. A new hook is deployed after remediation.
-
-A hook pause key would introduce a new censorship/DoS primitive without solving the underlying asset problem. For V1, delisting and redeployment are the cleaner emergency controls.
+- route is always the direct FewV2 pair
+- pair is always derived from immutable `fewV2Factory`
+- user-supplied pair/path data is never trusted
+- slippage remains a router-level protection
 
 ---
 
-## 5. Why Immutable Factories
+## 5. Why No Pause
 
-`fewFactory` and `fewV2Factory` are core Ring infrastructure. Making them mutable would add a high-impact pointer that can redirect the hook's entire liquidity source.
+A pause key would add a governance DoS surface to a contract that does not custody LP inventory.
 
-Immutable factories give auditors a stable statement:
+Failure response should be:
+
+1. Swap reverts through fail-closed checks
+2. Router/hooklist delists the pool or hook
+3. Ring redeploys a new hook if needed
+
+That response is slower than a pause button, but it avoids adding a privileged key to the swap path.
+
+---
+
+## 6. Why Immutable Factories
+
+`fewFactory` and `fewV2Factory` define the entire liquidity source. If either were mutable, a key could silently redirect all routing.
+
+Immutability gives reviewers a simple invariant:
 
 ```text
-All wrapped tokens and pairs are derived from these exact deployed factories.
+All FewTokens and FewV2 pairs are derived from these exact factory addresses.
 ```
 
-If Ring ever migrates FewV2 factories, the correct path is:
-
-1. Mine a new hook address
-2. Deploy the new hook with the new immutable factory
-3. Initialize pools that have valid direct pairs
-4. Re-submit to routing infrastructure
-
-This is slower than a setter, but it is public, reviewable, and does not give a key the ability to silently repoint swap execution.
+Factory migration means a new hook deployment.
 
 ---
 
-## 6. Why 5 bps Is Constant
+## 7. Why 5 bps Is Constant
 
 `PROTOCOL_FEE_BPS = 5` is fixed at compile time.
 
 Reasons:
 
-- It avoids fee-governance risk.
-- It gives exact-output math one permanent denominator.
-- It aligns with the UNIfication-style 1/6 protocol-fee ratio for a 30 bps V2-style pair.
-- It keeps audit review focused on code correctness, not future fee governance.
-
-Ring does not take a treasury cut in this build. The entire skim goes to `RingUniBurner`, then into Uniswap's TokenJar path. Ring does not perform the UNI buyback or burn; Uniswap's Firepit/releaser layer handles that downstream.
-
----
-
-## 7. Why `RingUniBurner` Is Separate
-
-The hook should not know how to perform UNI buybacks or burns. It should only send the fee to a small adapter that pushes assets into Uniswap's official protocol-fee pipeline.
-
-`RingUniBurner` exists to:
-
-1. Receive FewToken fees from the hook
-2. Validate the FewToken against `fewFactory`
-3. Unwrap 1:1 into the underlying token
-4. Push the underlying to Uniswap's TokenJar
-
-The adapter has an owner because operational reality may require pausing flushes or rescuing accrued fees if TokenJar migrates or a wrapper breaks. That role is outside the swap path and bounded to accrued fee balances.
-
-This split keeps the hook ownerless while still giving Ring a narrow operational escape hatch for the fee adapter.
-
-Production requires this owner to be a Gnosis Safe with a timelock before meaningful volume. A future V2 can remove `emergencyWithdraw` and make the burner closer to fully ownerless, but that deliberately gives up recovery if TokenJar migrates or a wrapper-specific failure strands accrued fees.
+- no fee-governance risk
+- simpler exact-output math
+- stable audit target
+- clear integration expectation
+- fee path goes to Uniswap TokenJar / Firepit, not a Ring-controlled burn
 
 ---
 
-## 8. Accepted Tradeoffs
+## 8. Why `RingUniBurner` Is Separate
 
-| Decision | What we gain | What we give up |
+The hook should not perform UNI swaps or burns. It should only push the fee into Uniswap's fee pipeline.
+
+`RingUniBurner`:
+
+1. Receives FewToken fees
+2. Validates the FewToken through `fewFactory`
+3. Unwraps it to the underlying token
+4. Transfers the underlying token to TokenJar
+
+The burner keeps a limited owner role for pause / emergency rescue of fee balances. That owner cannot affect user swap funds in the hook.
+
+---
+
+## 9. Accepted Tradeoffs
+
+| Decision | Gain | Tradeoff |
 |---|---|---|
 | Ownerless hook | No governance attack surface in swap path | No hot patching |
-| Empty-hookData default auto-route | Uniswap router can discover direct or fixed-connector FewV2 price without custom calldata | Larger audit surface than direct-only |
-| Calldata route with fixed connectors | Ring/router integrations can choose explicit paths without arbitrary intermediates | Integrators must encode `hookData` correctly |
-| Immutable burner | No fee-sink rotation attack | Burner migration requires hook redeploy |
+| Direct-only routing | Much smaller audit surface | Depends on router-level multi-hop composition |
+| Ignore `hookData` | Integration-tolerant default behavior | No advanced path injection |
+| Immutable factories | No silent liquidity-source rotation | Factory migration requires redeploy |
 | Constant 5 bps fee | Simple math and social commitment | No fee tuning |
-| Owner-managed V1 burner | Recovery path for TokenJar/wrapper exceptions | Residual key over accrued fees until flushed |
-| Permissionless sweep to immutable recipient | No stuck dust, no caller trust | Cannot choose custom recipient per sweep |
-| No v4 liquidity | Uses existing FewV2 liquidity | Pool UI must explain that LPing happens in FewV2 |
-
-These are product constraints, not hidden limitations.
+| Owner-managed burner | Recovery path for fee adapter issues | Residual key over accrued fees |
+| Permissionless sweep | No stuck dust | Recipient fixed forever |
 
 ---
 
-## 9. Risk Register
+## 10. Risk Register
 
 | Risk | Status | Rationale |
 |---|---|---|
-| Wrong `BeforeSwapDelta` sign | Tested | Exact-input, exact-output, and fork e2e tests cover settlement signs |
-| Empty-hookData chooses wrong route | Tested | Fork tests compare actual swap to local best-route quote and V4Quoter exact-in/exact-out |
-| Exact-output underfill after fee skim | Mitigated | Gross-up before quoting; `ExactOutputUnderfilled` guard |
-| Arbitrary calldata intermediate | Mitigated | Intermediates must be fixed default connectors |
-| Calldata path cycle / pair reuse | Mitigated | Duplicate tokens and duplicate pairs rejected |
-| FewToken wrapper not 1:1 | Mitigated | `WrapMismatch` / `UnwrapMismatch` fail closed |
-| Pair returns wrong token layout | Mitigated | `TokenMismatch` checks actual pair tokens |
-| Drained pair produces bad quotes | Mitigated | `DegeneratePair` reserve sentinel |
-| Reentrancy through token/pair calls | Mitigated | `nonReentrant`; known trusted FewV2/FewToken surface; tests include sweep reentrancy |
-| Direct hook calls | Mitigated | `BaseHook` `onlyPoolManager` path tested |
-| Forced ETH or accidental tokens | Mitigated | Permissionless sweep to immutable recipient |
-| Fee recipient compromise | Low | Hook sweep destination is immutable; compromise affects receiving wallet, not hook behavior |
-| Burner owner compromise | Accepted | Bounded to accrued fees in `RingUniBurner`; documented in `OWNER_KEY_COMPROMISE.md` |
-| TokenJar migration | Accepted | Burner can pause/withdraw accrued fees; hook redeploy for permanent new adapter |
-| Factory migration | Accepted | Hook redeploy; no mutable factory pointer |
-| Router delisting needed | Operational | Handled off-chain by routing-api/hooklist, not by hook pause |
+| Wrong `BeforeSwapDelta` sign | Tested | Fork exact-in / exact-out in both directions |
+| No direct pair | Mitigated | Initialization and swap resolution require direct FewV2 pair |
+| Exact-output underfill | Mitigated | Fee gross-up plus `ExactOutputUnderfilled` guard |
+| Fake FewToken endpoint | Mitigated | Canonical `fewFactory` lookup |
+| Fake pair or wrong token layout | Mitigated | Pair derived from factory and token-shape checked |
+| Drained pair | Mitigated | Reserve sentinel |
+| Wrapper not 1:1 | Mitigated | `WrapMismatch` / `UnwrapMismatch` |
+| Reentrancy | Mitigated | `nonReentrant` plus tests |
+| Forced ETH / accidental tokens | Mitigated | Permissionless sweep to immutable recipient |
+| Burner owner compromise | Accepted | Bounded to accrued fees in `RingUniBurner` |
+| Router cannot compose multi-hop hook pools | Integration risk | Not a hook custody risk; should be validated during routing integration |
 
 ---
 
-## 10. What Was Removed From Earlier Designs
-
-The ownerless branch removes a whole class of mechanisms:
-
-| Removed mechanism | Why it was removed |
-|---|---|
-| Hook ownership | No key should control the swap path |
-| Swap pause | Delisting/redeploy is safer than an on-chain DoS key |
-| Custom route registry | Route selection should not be governable inside `beforeSwap` |
-| Admin-controlled multi-hop intermediates | Path finding may be per-transaction, but no owner can register global routes |
-| Route timelock | No route registry means no timelock needed |
-| Fee setter | 5 bps is a public constant |
-| Fee recipient setter | Sweep destination is immutable |
-| Burner rotation | Fee sink is immutable; migration means redeploy |
-| Renounce override in hook | No hook owner exists to renounce |
-
-This is why the governance risk profile improved: stale classes of findings around route timestamps and privileged controls disappeared with the code. The calldata-route branch reintroduces `calls-loop` findings, but they are bounded by the immutable connector set and per-transaction calldata.
-
----
-
-## 11. Test Strategy Rationale
-
-The test suite is intentionally split by risk:
+## 11. Test Strategy
 
 | Suite | Purpose |
 |---|---|
-| `FewV2Math.t.sol` | Verify V2 quote math, rounding, and sentinel behavior |
-| `RingUniBurner.t.sol` | Validate flush, owner-only emergency paths, pause, and unknown FewToken rejection |
-| `RingAggregatorHookInvariants.t.sol` | Fuzz fee accounting and exact-output gross-up properties |
-| `RingAggregatorHookFork.t.sol` | Exercise real mainnet factories, real FewTokens, real FewV2 pair, real TokenJar |
+| `FewV2Math.t.sol` | V2 quote math and rounding |
+| `RingUniBurner.t.sol` | Fee adapter, owner paths, pause, unknown FewToken rejection |
+| `RingAggregatorHookInvariants.t.sol` | Fee accounting, gross-up, reserve sentinel |
+| `RingAggregatorHookFork.t.sol` | Real mainnet factories, FewTokens, FewV2 pairs, V4Quoter, TokenJar |
 
-The fork tests are critical because this hook is an adapter over deployed Ring infrastructure. Hermetic mocks are useful, but they are not enough to prove the real `fewFactory -> FewToken -> FewV2Pair -> TokenJar` path.
-
-Current result: 88/88 tests passing.
+Current result: 73/73 tests passing.
 
 ---
 
-## 12. Coverage Interpretation
-
-Coverage is strongest on the two audit-critical contracts:
+## 12. Coverage
 
 | File | Line coverage | Function coverage |
 |---|---:|---:|
-| `src/RingAggregatorHook.sol` | 305/314 = 97.13% | 38/38 = 100.00% |
+| `src/RingAggregatorHook.sol` | 142/144 = 98.61% | 20/20 = 100.00% |
 | `src/RingUniBurner.sol` | 26/27 = 96.30% | 5/5 = 100.00% |
-| `src/lib/FewV2Math.sol` | 29/34 = 85.29% | 4/5 = 80.00% |
-
-Repo-wide coverage is lower because scripts and abstract v4 helper stubs are included in LCOV. The audit focus should be per-file behavior on the hook, burner, and math library.
+| `src/lib/FewV2Math.sol` | 14/14 = 100.00% | 2/2 = 100.00% |
 
 ---
 
-## 13. Auditor Questions We Want Answered
+## 13. Final Position
 
-1. Is the `BeforeSwapDelta` accounting correct for both swap directions and exact modes?
-2. Can empty-hookData default routing ever select a stale, degenerate, or worse route than intended?
-3. Can any FewToken/FewV2 edge case break the 1:1 wrap/unwrap or pair-token assumptions?
-4. Is exact-output fee gross-up correct under all rounding boundaries?
-5. Does permissionless sweep create any griefing or accounting issue?
-6. Does `RingUniBurner` conform to Uniswap's fee-adapter / push-source model, without self-rolled UNI swaps or burns?
-7. Is the `RingUniBurner.owner` emergency scope correctly bounded and documented?
-8. Are there any integration assumptions with Universal Router or routing-api that need extra tests?
+This branch is the smaller audit target:
 
-The preferred audit outcome is not just "no critical bugs"; it is a sharper statement of the integration invariants Ring must preserve at deployment and monitoring time.
+- 395 nSLOC of Ring-written production logic
+- no hook owner
+- no in-hook connector router
+- no calldata path engine
+- no user-supplied pair addresses
+- one immutable fee
+- one immutable fee sink
+- one residual owner isolated to the fee adapter
 
----
-
-## 14. Final Position
-
-This version is ready for audit because it is bounded:
-
-- One immutable default connector set
-- No admin route book
-- One immutable fee
-- One immutable fee sink
-- One immutable sweep destination
-- One external operational owner, isolated to the burner
-
-The remaining uncertainty is exactly what an audit should examine: swap accounting, external-call assumptions, and deployment wiring. The core governance attack surface has been removed rather than mitigated with process.
+The main remaining review questions are swap accounting, exact-output math, direct pair validation, reentrancy, and whether the TokenJar adapter model is correct.

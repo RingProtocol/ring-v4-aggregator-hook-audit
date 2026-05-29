@@ -7,8 +7,8 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import {IFewFactory} from "./interfaces/IFewFactory.sol";
-import {IFewWrappedToken} from "./interfaces/IFewWrappedToken.sol";
+import {IFewFactory} from "./interfaces/external/IFewFactory.sol";
+import {IFewWrappedToken} from "./interfaces/external/IFewWrappedToken.sol";
 
 /// @title  RingUniBurner — Push-source adapter to Uniswap's TokenJar
 /// @notice Receives the 5 bps protocol fee (denominated in fewTokens) from

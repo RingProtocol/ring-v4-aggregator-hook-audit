@@ -301,7 +301,7 @@ In `test/fork/RingAggregatorHookFork.t.sol`:
 | `test_fork_uniBurn_emitsUniFeeAccruedEvent` | Event emitted with poolId + fewToken + amount |
 | `test_attack_constructor_zeroUniBurner_reverts` | Zero address rejected at construction |
 
-All 88 tests pass (25 unit + 5 invariant + 58 fork).
+All 73 tests pass (21 unit + 5 invariant + 47 fork).
 
 ## 8. Fee configuration
 

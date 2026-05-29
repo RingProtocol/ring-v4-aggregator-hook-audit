@@ -4,11 +4,12 @@ pragma solidity 0.8.26;
 import {Script, console2} from "forge-std/Script.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
+import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../src/RingAggregatorHook.sol";
-import {IFewFactory} from "../src/interfaces/IFewFactory.sol";
-import {ISwapV2Factory, IWETH9} from "../src/interfaces/IFewV2.sol";
-import {HookMiner} from "../test/utils/HookMiner.sol";
+import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
+import {ISwapV2Factory} from "../src/interfaces/external/IFewV2.sol";
 
 /// @notice Mine a CREATE2 salt for RingAggregatorHook so its address encodes the
 ///         beforeInitialize | beforeAddLiquidity | beforeSwap | beforeSwapReturnsDelta flags
@@ -34,12 +35,6 @@ contract MineHookAddress is Script {
     address constant WETH_DEFAULT = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant FEW_FACTORY_DEFAULT = 0x7D86394139bf1122E82FDF45Bb4e3b038A4464DD;
     address constant RING_FACTORY_DEFAULT = 0xeb2A625B704d73e82946D8d026E1F588Eed06416;
-    address constant FW_WETH_DEFAULT = 0xa250CC729Bb3323e7933022a67B52200fE354767;
-    address constant FW_WBTC_DEFAULT = 0x2078f336Fdd260f708BEc4a20c82b063274E1b23;
-    address constant FW_USDC_DEFAULT = 0x0492560FA7Cfd6A85E50D8bE3F77318994F8f429;
-    address constant FW_USDT_DEFAULT = 0xef87f4608e601E8564800265AeE1c1FfaDF73283;
-    address constant FW_DAI_DEFAULT = 0x8A6fe57C08C84e0f4eE97aAe68a62e820a37d259;
-    address constant FW_USDR_DEFAULT = 0x29A294F8FE285Dfb259705213e375eCb7Fcf9d9b;
 
     function run() external view {
         address poolManager = vm.envOr("V4_POOL_MANAGER", V4_PM_DEFAULT);
@@ -48,7 +43,6 @@ contract MineHookAddress is Script {
         address fewV2Factory = vm.envOr("FEW_V2_FACTORY", RING_FACTORY_DEFAULT);
         address feeRecipient = vm.envAddress("FEE_RECIPIENT_ADDRESS");
         address uniBurner = vm.envAddress("UNI_BURNER_ADDRESS");
-        address[6] memory defaultConnectors = _defaultConnectors();
 
         // The four flags the contract subscribes to.
         // Bit positions (from v4-core/src/libraries/Hooks.sol):
@@ -70,8 +64,7 @@ contract MineHookAddress is Script {
             ISwapV2Factory(fewV2Factory),
             IWETH9(weth),
             feeRecipient,
-            uniBurner,
-            defaultConnectors
+            uniBurner
         );
 
         console2.log("=== Mining hook address ===");
@@ -82,10 +75,6 @@ contract MineHookAddress is Script {
         console2.log("WETH:            ", weth);
         console2.log("Fee recipient:   ", feeRecipient);
         console2.log("UNI burner:      ", uniBurner);
-        console2.log("Default connectors:");
-        for (uint256 i = 0; i < defaultConnectors.length; ++i) {
-            console2.log("  connector:", defaultConnectors[i]);
-        }
         console2.log("Flags (uint160): ", flags);
         console2.log("");
 
@@ -97,14 +86,5 @@ contract MineHookAddress is Script {
         console2.logBytes32(salt);
         console2.log("");
         console2.log("Save the salt to .env as HOOK_SALT, then run DeployMainnet.s.sol.");
-    }
-
-    function _defaultConnectors() internal view returns (address[6] memory connectors) {
-        connectors[0] = vm.envOr("FW_WETH", FW_WETH_DEFAULT);
-        connectors[1] = vm.envOr("FW_WBTC", FW_WBTC_DEFAULT);
-        connectors[2] = vm.envOr("FW_USDC", FW_USDC_DEFAULT);
-        connectors[3] = vm.envOr("FW_USDT", FW_USDT_DEFAULT);
-        connectors[4] = vm.envOr("FW_DAI", FW_DAI_DEFAULT);
-        connectors[5] = vm.envOr("FW_USDR", FW_USDR_DEFAULT);
     }
 }

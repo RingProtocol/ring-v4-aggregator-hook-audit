@@ -15,11 +15,12 @@ import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/Pool
 import {BeforeSwapDelta, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 
-import {BaseHook} from "./utils/BaseHook.sol";
-import {DeltaResolver} from "./base/DeltaResolver.sol";
-import {IFewWrappedToken} from "./interfaces/IFewWrappedToken.sol";
-import {IFewFactory} from "./interfaces/IFewFactory.sol";
-import {ISwapV2Pair, ISwapV2Factory, IWETH9} from "./interfaces/IFewV2.sol";
+import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
+import {DeltaResolver} from "v4-periphery/src/base/DeltaResolver.sol";
+import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
+import {IFewWrappedToken} from "./interfaces/external/IFewWrappedToken.sol";
+import {IFewFactory} from "./interfaces/external/IFewFactory.sol";
+import {ISwapV2Pair, ISwapV2Factory} from "./interfaces/external/IFewV2.sol";
 import {FewV2Math} from "./lib/FewV2Math.sol";
 
 /// @title RingAggregatorHook (admin-less variant — no owner, no pause)
@@ -28,12 +29,8 @@ import {FewV2Math} from "./lib/FewV2Math.sol";
 ///           - Immutable wiring (fewFactory, fewV2Factory, weth, feeRecipient, uniBurner)
 ///           - On-chain state of fewV2 pairs (the actual liquidity it routes through)
 ///
-///         Empty `hookData` uses the built-in default router: direct 1-hop plus a fixed
-///         deploy-time connector set. Non-empty `hookData` may supply an ownerless calldata
-///         route `(address[] fewPath, uint256 amountLimit)`. The hook validates every path
-///         element on-chain against `fewFactory`, restricts hidden intermediates to the fixed
-///         connector set, and derives every pair from `fewV2Factory`; callers never supply pair
-///         addresses.
+///         Each v4 pool maps to one direct FewV2 pair. Multi-hop price improvement is left to
+///         Uniswap routing, which can compose A-X-B as two independent v4 hook pool hops.
 ///
 /// @dev FULLY-IMMUTABLE PERMISSION MODEL (zero governance attack surface):
 ///      ┌────────────────────────────────────────────────────────────────────────┐
@@ -82,20 +79,11 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     error WrapMismatch(uint256 expected, uint256 actual);
     error UnwrapMismatch(uint256 expected, uint256 actual);
     error DegeneratePair(address pair);
-    error InvalidRouteLength();
-    error InvalidRouteEndpoint(address actual, address expected);
-    error InvalidFewToken(address token);
-    error DuplicateRouteToken(address token);
-    error DuplicateRoutePair(address pair);
-    error InvalidRouteIntermediate(address token);
-    error InvalidAmountLimit();
-    error SlippageExceeded(uint256 actual, uint256 limit);
 
     // ============ Constants ============
     /// @notice 5 bps of every swap's gross fewToken output is forwarded to `uniBurner`.
     uint24 public constant PROTOCOL_FEE_BPS = 5;
     uint256 private constant FEE_DENOM = 10_000;
-    uint256 private constant DEFAULT_CONNECTOR_COUNT = 6;
 
     /// @notice Reserve sanity sentinel. V2 pairs lock `MINIMUM_LIQUIDITY = 1000 wei` at creation;
     ///         a pair at or below this level is fully drained — reject explicitly.
@@ -121,22 +109,15 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     address public immutable feeRecipient;
     /// @notice TokenJar fee adapter. Set once at deploy, never changeable.
     address public immutable uniBurner;
-    /// @notice Deploy-time fixed common FewToken connectors used for empty-hookData auto-routing.
-    address public immutable defaultConnector0;
-    address public immutable defaultConnector1;
-    address public immutable defaultConnector2;
-    address public immutable defaultConnector3;
-    address public immutable defaultConnector4;
-    address public immutable defaultConnector5;
 
     // ============ Mutable (internal only) ============
     /// @notice Tracks (token, fewToken) approvals — one-time max approval cache. Internal only.
     mapping(address => mapping(address => bool)) internal _approved;
 
-    struct Route {
-        address[] tokens;
-        address[] pairs;
-        uint256 amountLimit;
+    struct DirectRoute {
+        address fewIn;
+        address fewOut;
+        address pair;
     }
 
     // ============ Events ============
@@ -160,8 +141,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         ISwapV2Factory _fewV2Factory,
         IWETH9 _weth,
         address _feeRecipient,
-        address _uniBurner,
-        address[DEFAULT_CONNECTOR_COUNT] memory _defaultConnectors
+        address _uniBurner
     ) BaseHook(_pm) {
         if (address(_fewFactory) == address(0)) revert ZeroAddress();
         if (address(_fewV2Factory) == address(0)) revert ZeroAddress();
@@ -174,19 +154,6 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         weth = _weth;
         feeRecipient = _feeRecipient;
         uniBurner = _uniBurner;
-
-        for (uint256 i = 0; i < DEFAULT_CONNECTOR_COUNT; ++i) {
-            _assertCanonicalFewToken(_defaultConnectors[i]);
-            for (uint256 j = 0; j < i; ++j) {
-                if (_defaultConnectors[j] == _defaultConnectors[i]) revert DuplicateRouteToken(_defaultConnectors[i]);
-            }
-        }
-        defaultConnector0 = _defaultConnectors[0];
-        defaultConnector1 = _defaultConnectors[1];
-        defaultConnector2 = _defaultConnectors[2];
-        defaultConnector3 = _defaultConnectors[3];
-        defaultConnector4 = _defaultConnectors[4];
-        defaultConnector5 = _defaultConnectors[5];
     }
 
     // ============ Hook permissions ============
@@ -209,11 +176,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         });
     }
 
-    // ============ DeltaResolver glue ============
-    function _poolManager() internal view override returns (IPoolManager) {
-        return poolManager;
-    }
-
+    // ============ DeltaResolver payment glue ============
     function _pay(
         Currency currency,
         address,
@@ -236,11 +199,10 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         // Refuse 1:1 wrap pairs — those belong to FewTokenHook, not this hook.
         if (_isFewTokenOf(t0, t1) || _isFewTokenOf(t1, t0)) revert UseFewTokenHookForWrapPairs();
 
-        // Endpoint FewTokens must exist at init time. Empty-hookData swaps choose
-        // direct vs fixed-connector routes at quote/swap time; calldata-routed
-        // swaps validate their own path.
+        // Endpoint FewTokens and their direct FewV2 pair must exist at init time.
         (address fewA, address fewB) = _defaultFewPair(t0, t1);
         if (fewA == address(0) || fewB == address(0)) revert NoFewV2Route();
+        if (fewV2Factory.getPair(fewA, fewB) == address(0)) revert NoFewV2Route();
 
         return IHooks.beforeInitialize.selector;
     }
@@ -271,7 +233,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     }
 
     // ============ beforeSwap ============
-    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
         nonReentrant
@@ -280,7 +242,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         Currency inCurr = params.zeroForOne ? key.currency0 : key.currency1;
         Currency outCurr = params.zeroForOne ? key.currency1 : key.currency0;
 
-        Route memory route = _resolveRoute(key, params.zeroForOne, params.amountSpecified, hookData);
+        DirectRoute memory route = _resolveDirectRoute(key, params.zeroForOne);
 
         bool isExactInput = params.amountSpecified < 0;
         if (isExactInput) {
@@ -290,253 +252,18 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         }
     }
 
-    // ============ Route resolution ============
-    /// @dev `hookData == ""` runs the deploy-time fixed default router. Non-empty hookData
-    ///      must be `abi.encode(address[] fewPath, uint256 amountLimit)`.
-    ///      For exact-input, `amountLimit` is min output. For exact-output, it is max input.
-    function _resolveRoute(PoolKey calldata key, bool zeroForOne, int256 amountSpecified, bytes calldata hookData)
+    // ============ Direct route resolution ============
+    function _resolveDirectRoute(PoolKey calldata key, bool zeroForOne)
         internal
         view
-        returns (Route memory route)
+        returns (DirectRoute memory route)
     {
         (address fewA, address fewB) = _defaultFewPair(Currency.unwrap(key.currency0), Currency.unwrap(key.currency1));
         if (fewA == address(0) || fewB == address(0)) revert NoFewV2Route();
 
-        (address expectedIn, address expectedOut) = zeroForOne ? (fewA, fewB) : (fewB, fewA);
-        if (hookData.length == 0) {
-            bool exactInput = amountSpecified < 0;
-            uint256 quoteAmount = exactInput
-                ? uint256(-amountSpecified)
-                : (uint256(amountSpecified) * FEE_DENOM + (FEE_DENOM - PROTOCOL_FEE_BPS) - 1)
-                    / (FEE_DENOM - PROTOCOL_FEE_BPS);
-            return _defaultRoute(expectedIn, expectedOut, exactInput, quoteAmount);
-        }
-
-        (address[] memory path, uint256 amountLimit) = abi.decode(hookData, (address[], uint256));
-        if (amountLimit == 0) revert InvalidAmountLimit();
-        return _calldataRoute(path, expectedIn, expectedOut, amountLimit);
-    }
-
-    function _defaultRoute(address fewIn, address fewOut, bool exactInput, uint256 quoteAmount)
-        internal
-        view
-        returns (Route memory route)
-    {
-        address bestPair0 = address(0);
-        address bestPair1 = address(0);
-        address bestConnector = address(0);
-        uint256 bestQuote = 0;
-        uint256 bestHops = 0;
-
-        bool ok;
-        address directPair;
-        uint256 directQuote;
-        if (exactInput) {
-            (ok, directPair, directQuote) = _quoteDefaultExactInputDirect(fewIn, fewOut, quoteAmount);
-        } else {
-            (ok, directPair, directQuote) = _quoteDefaultExactOutputDirect(fewIn, fewOut, quoteAmount);
-        }
-        if (ok) {
-            bestPair0 = directPair;
-            bestQuote = directQuote;
-            bestHops = 1;
-        }
-
-        for (uint256 i = 0; i < DEFAULT_CONNECTOR_COUNT; ++i) {
-            address connector = _defaultConnectorAt(i);
-            if (connector == fewIn || connector == fewOut) continue;
-
-            if (exactInput) {
-                (ok, directPair, bestPair1, directQuote) =
-                    _quoteDefaultExactInputVia(fewIn, connector, fewOut, quoteAmount);
-            } else {
-                (ok, directPair, bestPair1, directQuote) =
-                    _quoteDefaultExactOutputVia(fewIn, connector, fewOut, quoteAmount);
-            }
-            if (!ok) continue;
-
-            if (bestHops == 0 || (exactInput ? directQuote > bestQuote : directQuote < bestQuote)) {
-                bestPair0 = directPair;
-                bestConnector = connector;
-                bestQuote = directQuote;
-                bestHops = 2;
-            }
-        }
-
-        if (bestHops == 0) revert NoFewV2Route();
-        if (bestHops == 1) return _route2(fewIn, fewOut, bestPair0, 0);
-        return _route3(fewIn, bestConnector, fewOut, bestPair0, bestPair1, 0);
-    }
-
-    function _calldataRoute(address[] memory path, address expectedIn, address expectedOut, uint256 amountLimit)
-        internal
-        view
-        returns (Route memory route)
-    {
-        uint256 length = path.length;
-        if (length < 2) revert InvalidRouteLength();
-        if (path[0] != expectedIn) revert InvalidRouteEndpoint(path[0], expectedIn);
-        if (path[length - 1] != expectedOut) revert InvalidRouteEndpoint(path[length - 1], expectedOut);
-
-        for (uint256 i = 0; i < length; ++i) {
-            _assertCanonicalFewToken(path[i]);
-            if (i > 0 && i < length - 1 && !_isDefaultConnector(path[i])) revert InvalidRouteIntermediate(path[i]);
-            for (uint256 j = 0; j < i; ++j) {
-                if (path[j] == path[i]) revert DuplicateRouteToken(path[i]);
-            }
-        }
-
-        route.tokens = path;
-        route.pairs = new address[](length - 1);
-        route.amountLimit = amountLimit;
-
-        for (uint256 i = 0; i < route.pairs.length; ++i) {
-            address pair = fewV2Factory.getPair(path[i], path[i + 1]);
-            if (pair == address(0)) revert NoFewV2Route();
-            for (uint256 j = 0; j < i; ++j) {
-                if (route.pairs[j] == pair) revert DuplicateRoutePair(pair);
-            }
-            route.pairs[i] = pair;
-        }
-    }
-
-    function _route2(address token0, address token1, address pair, uint256 amountLimit)
-        internal
-        pure
-        returns (Route memory route)
-    {
-        route.tokens = new address[](2);
-        route.tokens[0] = token0;
-        route.tokens[1] = token1;
-        route.pairs = new address[](1);
-        route.pairs[0] = pair;
-        route.amountLimit = amountLimit;
-    }
-
-    function _route3(address token0, address token1, address token2, address pair0, address pair1, uint256 amountLimit)
-        internal
-        pure
-        returns (Route memory route)
-    {
-        route.tokens = new address[](3);
-        route.tokens[0] = token0;
-        route.tokens[1] = token1;
-        route.tokens[2] = token2;
-        route.pairs = new address[](2);
-        route.pairs[0] = pair0;
-        route.pairs[1] = pair1;
-        route.amountLimit = amountLimit;
-    }
-
-    function _defaultConnectorAt(uint256 i) internal view returns (address) {
-        if (i == 0) return defaultConnector0;
-        if (i == 1) return defaultConnector1;
-        if (i == 2) return defaultConnector2;
-        if (i == 3) return defaultConnector3;
-        if (i == 4) return defaultConnector4;
-        return defaultConnector5;
-    }
-
-    function _isDefaultConnector(address token) internal view returns (bool) {
-        for (uint256 i = 0; i < DEFAULT_CONNECTOR_COUNT; ++i) {
-            if (_defaultConnectorAt(i) == token) return true;
-        }
-        return false;
-    }
-
-    function _quoteDefaultExactInputDirect(address fewIn, address fewOut, uint256 amountIn)
-        internal
-        view
-        returns (bool ok, address pair, uint256 amountOut)
-    {
-        pair = fewV2Factory.getPair(fewIn, fewOut);
-        if (pair == address(0) || amountIn == 0) return (false, address(0), 0);
-        (ok, amountOut) = _tryQuoteExactInputHop(pair, fewIn, fewOut, amountIn);
-    }
-
-    function _quoteDefaultExactInputVia(address fewIn, address connector, address fewOut, uint256 amountIn)
-        internal
-        view
-        returns (bool ok, address pair0, address pair1, uint256 amountOut)
-    {
-        pair0 = fewV2Factory.getPair(fewIn, connector);
-        pair1 = fewV2Factory.getPair(connector, fewOut);
-        if (pair0 == address(0) || pair1 == address(0) || pair0 == pair1 || amountIn == 0) {
-            return (false, address(0), address(0), 0);
-        }
-
-        uint256 connectorOut;
-        (ok, connectorOut) = _tryQuoteExactInputHop(pair0, fewIn, connector, amountIn);
-        if (!ok || connectorOut == 0) return (false, address(0), address(0), 0);
-        (ok, amountOut) = _tryQuoteExactInputHop(pair1, connector, fewOut, connectorOut);
-        if (!ok || amountOut == 0) return (false, address(0), address(0), 0);
-    }
-
-    function _quoteDefaultExactOutputDirect(address fewIn, address fewOut, uint256 amountOut)
-        internal
-        view
-        returns (bool ok, address pair, uint256 amountIn)
-    {
-        pair = fewV2Factory.getPair(fewIn, fewOut);
-        if (pair == address(0) || amountOut == 0) return (false, address(0), 0);
-        (ok, amountIn) = _tryQuoteExactOutputHop(pair, fewIn, fewOut, amountOut);
-    }
-
-    function _quoteDefaultExactOutputVia(address fewIn, address connector, address fewOut, uint256 amountOut)
-        internal
-        view
-        returns (bool ok, address pair0, address pair1, uint256 amountIn)
-    {
-        pair0 = fewV2Factory.getPair(fewIn, connector);
-        pair1 = fewV2Factory.getPair(connector, fewOut);
-        if (pair0 == address(0) || pair1 == address(0) || pair0 == pair1 || amountOut == 0) {
-            return (false, address(0), address(0), 0);
-        }
-
-        uint256 connectorIn;
-        (ok, connectorIn) = _tryQuoteExactOutputHop(pair1, connector, fewOut, amountOut);
-        if (!ok || connectorIn == 0) return (false, address(0), address(0), 0);
-        (ok, amountIn) = _tryQuoteExactOutputHop(pair0, fewIn, connector, connectorIn);
-        if (!ok || amountIn == 0) return (false, address(0), address(0), 0);
-    }
-
-    function _tryQuoteExactInputHop(address pair, address tokenIn, address tokenOut, uint256 amountIn)
-        internal
-        view
-        returns (bool ok, uint256 amountOut)
-    {
-        uint256 reserveIn;
-        uint256 reserveOut;
-        (ok, reserveIn, reserveOut,) = _tryHopState(pair, tokenIn, tokenOut);
-        if (!ok || amountIn == 0) return (false, 0);
-        amountOut = FewV2Math.getAmountOut(amountIn, reserveIn, reserveOut);
-        ok = amountOut != 0;
-    }
-
-    function _tryQuoteExactOutputHop(address pair, address tokenIn, address tokenOut, uint256 amountOut)
-        internal
-        view
-        returns (bool ok, uint256 amountIn)
-    {
-        uint256 reserveIn;
-        uint256 reserveOut;
-        (ok, reserveIn, reserveOut,) = _tryHopState(pair, tokenIn, tokenOut);
-        if (!ok || amountOut == 0 || amountOut >= reserveOut) return (false, 0);
-        amountIn = FewV2Math.getAmountIn(amountOut, reserveIn, reserveOut);
-        ok = amountIn != 0;
-    }
-
-    function _assertCanonicalFewToken(address fewToken) internal view {
-        if (fewToken == address(0)) revert InvalidFewToken(fewToken);
-        address underlying = address(0);
-        try IFewWrappedToken(fewToken).token() returns (address token) {
-            underlying = token;
-        } catch {
-            revert InvalidFewToken(fewToken);
-        }
-        if (underlying == address(0) || fewFactory.getWrappedToken(underlying) != fewToken) {
-            revert InvalidFewToken(fewToken);
-        }
+        (route.fewIn, route.fewOut) = zeroForOne ? (fewA, fewB) : (fewB, fewA);
+        route.pair = fewV2Factory.getPair(route.fewIn, route.fewOut);
+        if (route.pair == address(0)) revert NoFewV2Route();
     }
 
     // ============ Exact-input ============
@@ -546,20 +273,17 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         Currency inCurr,
         Currency outCurr,
         SwapParams calldata params,
-        Route memory route
+        DirectRoute memory route
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
         uint256 amountIn = uint256(-params.amountSpecified);
 
         _take(inCurr, address(this), amountIn);
-        uint256 fwInAmount = _wrap(inCurr, route.tokens[0], amountIn);
-        uint256 fwOutAmount = _executeFewV2Route(route, fwInAmount);
+        uint256 fwInAmount = _wrap(inCurr, route.fewIn, amountIn);
+        uint256 fwOutAmount = _executeFewV2Hop(route.pair, route.fewIn, route.fewOut, fwInAmount);
 
-        uint256 fwUserOut = _skimUniBurnFee(key.toId(), route.tokens[route.tokens.length - 1], fwOutAmount);
+        uint256 fwUserOut = _skimUniBurnFee(key.toId(), route.fewOut, fwOutAmount);
 
-        uint256 amountOut = _unwrap(route.tokens[route.tokens.length - 1], outCurr, fwUserOut);
-        if (route.amountLimit != 0 && amountOut < route.amountLimit) {
-            revert SlippageExceeded(amountOut, route.amountLimit);
-        }
+        uint256 amountOut = _unwrap(route.fewOut, outCurr, fwUserOut);
         _settle(outCurr, address(this), amountOut);
 
         emit SwapAggregated(
@@ -578,26 +302,23 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         Currency inCurr,
         Currency outCurr,
         SwapParams calldata params,
-        Route memory route
+        DirectRoute memory route
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
         uint256 amountOut = uint256(params.amountSpecified);
 
         // Gross up so that after `_skimUniBurnFee` the user still receives `amountOut`.
         uint256 fwOutGross =
             (amountOut * FEE_DENOM + (FEE_DENOM - PROTOCOL_FEE_BPS) - 1) / (FEE_DENOM - PROTOCOL_FEE_BPS);
-        uint256 fwInRequired = _quoteAmountInForRoute(route, fwOutGross);
+        uint256 fwInRequired = _quoteAmountInForHop(route.pair, route.fewIn, route.fewOut, fwOutGross);
         uint256 amountIn = fwInRequired; // 1:1 wrap
-        if (route.amountLimit != 0 && amountIn > route.amountLimit) {
-            revert SlippageExceeded(amountIn, route.amountLimit);
-        }
 
         _take(inCurr, address(this), amountIn);
-        uint256 fwInAmount = _wrap(inCurr, route.tokens[0], amountIn);
-        uint256 fwOutAmount = _executeFewV2Route(route, fwInAmount);
+        uint256 fwInAmount = _wrap(inCurr, route.fewIn, amountIn);
+        uint256 fwOutAmount = _executeFewV2Hop(route.pair, route.fewIn, route.fewOut, fwInAmount);
 
-        uint256 fwUserOut = _skimUniBurnFee(key.toId(), route.tokens[route.tokens.length - 1], fwOutAmount);
+        uint256 fwUserOut = _skimUniBurnFee(key.toId(), route.fewOut, fwOutAmount);
 
-        uint256 actualOut = _unwrap(route.tokens[route.tokens.length - 1], outCurr, fwUserOut);
+        uint256 actualOut = _unwrap(route.fewOut, outCurr, fwUserOut);
         if (actualOut < amountOut) revert ExactOutputUnderfilled(actualOut, amountOut);
 
         _settle(outCurr, address(this), amountOut);
@@ -656,21 +377,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         _approved[token][spender] = true;
     }
 
-    // ============ FewV2 route execution ============
-    function _executeFewV2Route(Route memory route, uint256 amountIn) internal returns (uint256 amountOut) {
-        amountOut = amountIn;
-        for (uint256 i = 0; i < route.pairs.length; ++i) {
-            amountOut = _executeFewV2Hop(route.pairs[i], route.tokens[i], route.tokens[i + 1], amountOut);
-        }
-    }
-
-    function _quoteAmountInForRoute(Route memory route, uint256 finalOut) internal view returns (uint256 amountIn) {
-        amountIn = finalOut;
-        for (uint256 i = route.pairs.length; i > 0; --i) {
-            amountIn = _quoteAmountInForHop(route.pairs[i - 1], route.tokens[i - 1], route.tokens[i], amountIn);
-        }
-    }
-
+    // ============ FewV2 direct-pair execution ============
     function _executeFewV2Hop(address pair, address tokenIn, address tokenOut, uint256 amountIn)
         internal
         returns (uint256 amountOut)
@@ -691,27 +398,6 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     {
         (uint256 reserveIn, uint256 reserveOut,) = _hopState(pair, tokenIn, tokenOut);
         amountIn = FewV2Math.getAmountIn(finalOut, reserveIn, reserveOut);
-    }
-
-    function _tryHopState(address pair, address tokenIn, address tokenOut)
-        internal
-        view
-        returns (bool ok, uint256 reserveIn, uint256 reserveOut, bool inputIsToken0)
-    {
-        address t0 = ISwapV2Pair(pair).token0();
-        address t1 = ISwapV2Pair(pair).token1();
-        (uint112 r0, uint112 r1,) = ISwapV2Pair(pair).getReserves();
-
-        if (tokenIn == t0 && tokenOut == t1) {
-            inputIsToken0 = true;
-            (reserveIn, reserveOut) = (uint256(r0), uint256(r1));
-        } else if (tokenIn == t1 && tokenOut == t0) {
-            (reserveIn, reserveOut) = (uint256(r1), uint256(r0));
-        } else {
-            return (false, 0, 0, false);
-        }
-
-        ok = reserveIn > MIN_PAIR_RESERVE && reserveOut > MIN_PAIR_RESERVE;
     }
 
     function _hopState(address pair, address tokenIn, address tokenOut)
@@ -756,18 +442,11 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
 
     // ============ Views ============
     /// @notice The direct 1-hop FewV2 route derived from fewFactory for a pool.
-    /// @dev Empty-hookData swaps consider this pair plus the fixed default connectors.
     function defaultRouteFor(PoolKey calldata key) external view returns (address fewA, address fewB, address pair) {
         (fewA, fewB) = _defaultFewPair(Currency.unwrap(key.currency0), Currency.unwrap(key.currency1));
         if (fewA != address(0) && fewB != address(0)) {
             pair = fewV2Factory.getPair(fewA, fewB);
         }
-    }
-
-    /// @notice Fixed common connector FewToken at `index`.
-    function defaultConnector(uint256 index) external view returns (address) {
-        if (index >= DEFAULT_CONNECTOR_COUNT) revert InvalidRouteLength();
-        return _defaultConnectorAt(index);
     }
 
     // ============ Native ETH receive ============

@@ -6,7 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -16,14 +16,16 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
+import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../../src/RingAggregatorHook.sol";
 import {RingUniBurner} from "../../src/RingUniBurner.sol";
-import {IFewFactory} from "../../src/interfaces/IFewFactory.sol";
-import {IFewWrappedToken} from "../../src/interfaces/IFewWrappedToken.sol";
-import {ISwapV2Pair, ISwapV2Factory, IWETH9} from "../../src/interfaces/IFewV2.sol";
-import {BaseHook} from "../../src/utils/BaseHook.sol";
-import {HookMiner} from "../utils/HookMiner.sol";
+import {IFewFactory} from "../../src/interfaces/external/IFewFactory.sol";
+import {IFewWrappedToken} from "../../src/interfaces/external/IFewWrappedToken.sol";
+import {ISwapV2Pair, ISwapV2Factory} from "../../src/interfaces/external/IFewV2.sol";
+import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
+import {ImmutableState} from "v4-periphery/src/base/ImmutableState.sol";
 
 interface IV4Quoter {
     struct QuoteExactSingleParams {
@@ -76,10 +78,9 @@ contract HookNoAddressCheck is RingAggregatorHook {
         ISwapV2Factory _fewV2Factory,
         IWETH9 _weth,
         address _feeRecipient,
-        address _uniBurner,
-        address[6] memory _defaultConnectors
-    ) RingAggregatorHook(_pm, _fewFactory, _fewV2Factory, _weth, _feeRecipient, _uniBurner, _defaultConnectors) {}
-    function _validateHookAddress(BaseHook) internal pure override {}
+        address _uniBurner
+    ) RingAggregatorHook(_pm, _fewFactory, _fewV2Factory, _weth, _feeRecipient, _uniBurner) {}
+    function validateHookAddress(BaseHook) internal pure override {}
 }
 
 /// @notice Mainnet fork e2e for RingAggregatorHook (admin-less variant).
@@ -96,15 +97,9 @@ contract RingAggregatorHookForkTest is Test {
     address constant V4_PM = 0x000000000004444c5dc75cB358380D2e3dE08A90;
     address constant V4_QUOTER = 0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203;
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address constant USDR = 0x4EA40dcee961675683e0a2e1721Bd49CB9bca913;
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant FW_ETH = 0xa250CC729Bb3323e7933022a67B52200fE354767;
-    address constant FW_WBTC = 0x2078f336Fdd260f708BEc4a20c82b063274E1b23;
     address constant FW_USDC = 0x0492560FA7Cfd6A85E50D8bE3F77318994F8f429;
-    address constant FW_USDT = 0xef87f4608e601E8564800265AeE1c1FfaDF73283;
-    address constant FW_DAI = 0x8A6fe57C08C84e0f4eE97aAe68a62e820a37d259;
-    address constant FW_USDR = 0x29A294F8FE285Dfb259705213e375eCb7Fcf9d9b;
-    address constant FW_UNI = 0xE8E1F50392Bd61D0F8F48E8E7aF51D3b8a52090a;
     address constant USDS = 0xdC035D45d973E3EC169d2276DDab16f1e407384F;
     address constant FW_USDS = 0xD777151C92C05fEa839b2c21b345a78e1F1163Fe;
     address constant FEW_FACTORY = 0x7D86394139bf1122E82FDF45Bb4e3b038A4464DD;
@@ -155,8 +150,7 @@ contract RingAggregatorHookForkTest is Test {
             ISwapV2Factory(RING_FACTORY),
             IWETH9(WETH),
             FEE_RECIPIENT,
-            address(burner),
-            _defaultConnectors()
+            address(burner)
         );
         (address mined, bytes32 salt) = HookMiner.find(address(this), flags, creationCode, ctorArgs);
 
@@ -167,8 +161,7 @@ contract RingAggregatorHookForkTest is Test {
             ISwapV2Factory(RING_FACTORY),
             IWETH9(WETH),
             FEE_RECIPIENT,
-            address(burner),
-            _defaultConnectors()
+            address(burner)
         );
         require(address(hook) == mined, "Hook address mismatch");
 
@@ -194,36 +187,6 @@ contract RingAggregatorHookForkTest is Test {
             vm.skip(true);
         }
         _;
-    }
-
-    function _routeData3(address a, address b, address c, uint256 amountLimit) internal pure returns (bytes memory) {
-        address[] memory path = new address[](3);
-        path[0] = a;
-        path[1] = b;
-        path[2] = c;
-        return abi.encode(path, amountLimit);
-    }
-
-    function _routeData4(address a, address b, address c, address d, uint256 amountLimit)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        address[] memory path = new address[](4);
-        path[0] = a;
-        path[1] = b;
-        path[2] = c;
-        path[3] = d;
-        return abi.encode(path, amountLimit);
-    }
-
-    function _defaultConnectors() internal pure returns (address[6] memory connectors) {
-        connectors[0] = FW_ETH;
-        connectors[1] = FW_WBTC;
-        connectors[2] = FW_USDC;
-        connectors[3] = FW_USDT;
-        connectors[4] = FW_DAI;
-        connectors[5] = FW_USDR;
     }
 
     function _netAfterFee(uint256 grossFwOut) internal pure returns (uint256) {
@@ -300,29 +263,10 @@ contract RingAggregatorHookForkTest is Test {
         view
         returns (uint256 bestGrossOut)
     {
-        bool found;
         address pair = ISwapV2Factory(RING_FACTORY).getPair(fewIn, fewOut);
-        (found, bestGrossOut) = _quoteHopExactInput(pair, fewIn, fewOut, amountIn);
-
-        address[6] memory connectors = _defaultConnectors();
-        for (uint256 i = 0; i < connectors.length; ++i) {
-            address connector = connectors[i];
-            if (connector == fewIn || connector == fewOut) continue;
-
-            address pair0 = ISwapV2Factory(RING_FACTORY).getPair(fewIn, connector);
-            address pair1 = ISwapV2Factory(RING_FACTORY).getPair(connector, fewOut);
-            (bool ok, uint256 midOut) = _quoteHopExactInput(pair0, fewIn, connector, amountIn);
-            if (!ok) continue;
-            uint256 grossOut;
-            (ok, grossOut) = _quoteHopExactInput(pair1, connector, fewOut, midOut);
-            if (!ok) continue;
-
-            if (!found || grossOut > bestGrossOut) {
-                found = true;
-                bestGrossOut = grossOut;
-            }
-        }
-        require(found, "no default exact-in route");
+        (bool found, uint256 grossOut) = _quoteHopExactInput(pair, fewIn, fewOut, amountIn);
+        require(found, "no direct exact-in route");
+        return grossOut;
     }
 
     function _bestDefaultExactOutput(address fewIn, address fewOut, uint256 grossOut)
@@ -330,29 +274,10 @@ contract RingAggregatorHookForkTest is Test {
         view
         returns (uint256 bestAmountIn)
     {
-        bool found;
         address pair = ISwapV2Factory(RING_FACTORY).getPair(fewIn, fewOut);
-        (found, bestAmountIn) = _quoteHopExactOutput(pair, fewIn, fewOut, grossOut);
-
-        address[6] memory connectors = _defaultConnectors();
-        for (uint256 i = 0; i < connectors.length; ++i) {
-            address connector = connectors[i];
-            if (connector == fewIn || connector == fewOut) continue;
-
-            address pair0 = ISwapV2Factory(RING_FACTORY).getPair(fewIn, connector);
-            address pair1 = ISwapV2Factory(RING_FACTORY).getPair(connector, fewOut);
-            (bool ok, uint256 midIn) = _quoteHopExactOutput(pair1, connector, fewOut, grossOut);
-            if (!ok) continue;
-            uint256 amountIn;
-            (ok, amountIn) = _quoteHopExactOutput(pair0, fewIn, connector, midIn);
-            if (!ok) continue;
-
-            if (!found || amountIn < bestAmountIn) {
-                found = true;
-                bestAmountIn = amountIn;
-            }
-        }
-        require(found, "no default exact-out route");
+        (bool found, uint256 amountIn) = _quoteHopExactOutput(pair, fewIn, fewOut, grossOut);
+        require(found, "no direct exact-out route");
+        return amountIn;
     }
 
     // ─────────── Sanity ───────────
@@ -368,15 +293,7 @@ contract RingAggregatorHookForkTest is Test {
         assertEq(pair, FEWV2_PAIR, "pair == real fewV2 pair");
     }
 
-    function test_fork_defaultConnectorsConfigured() public requireFork {
-        address[6] memory connectors = _defaultConnectors();
-        for (uint256 i = 0; i < connectors.length; ++i) {
-            assertEq(hook.defaultConnector(i), connectors[i], "connector mismatch");
-        }
-        assertEq(IFewFactory(FEW_FACTORY).getWrappedToken(USDR), FW_USDR, "fwUSDR canonical");
-    }
-
-    function test_fork_emptyHookData_autoRoute_matchesBestDefaultQuote_exactInput() public requireFork {
+    function test_fork_emptyHookData_directRoute_matchesDirectQuote_exactInput() public requireFork {
         uint256 amountIn = 0.01 ether;
         uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, amountIn));
 
@@ -392,7 +309,7 @@ contract RingAggregatorHookForkTest is Test {
         swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, "");
 
         uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
-        assertEq(received, expectedNetOut, "empty hookData chose best exact-in default route");
+        assertEq(received, expectedNetOut, "empty hookData used direct route");
     }
 
     function test_fork_v4Quoter_emptyHookData_matchesActualSwap_exactInput() public requireFork {
@@ -405,7 +322,7 @@ contract RingAggregatorHookForkTest is Test {
                     poolKey: ethUsdcKey, zeroForOne: true, exactAmount: uint128(amountIn), hookData: ""
                 })
             );
-        assertEq(quotedAmountOut, expectedNetOut, "V4Quoter sees default auto route");
+        assertEq(quotedAmountOut, expectedNetOut, "V4Quoter sees direct route");
         assertGt(gasEstimate, 0, "V4Quoter returns gas estimate");
 
         vm.deal(USER, amountIn);
@@ -432,7 +349,7 @@ contract RingAggregatorHookForkTest is Test {
                     poolKey: ethUsdcKey, zeroForOne: true, exactAmount: uint128(amountOut), hookData: ""
                 })
             );
-        assertEq(quotedAmountIn, expectedIn, "V4Quoter sees default exact-out auto route");
+        assertEq(quotedAmountIn, expectedIn, "V4Quoter sees direct exact-out route");
         assertGt(gasEstimate, 0, "V4Quoter returns gas estimate");
 
         vm.deal(USER, quotedAmountIn);
@@ -450,7 +367,7 @@ contract RingAggregatorHookForkTest is Test {
         assertEq(uint256(uint128(-delta.amount0())), quotedAmountIn, "V4Quoter quote matches actual input");
     }
 
-    function test_fork_initAllowsFewFactorySupportedPoolWithoutDirectPair() public requireFork {
+    function test_fork_revertsInitWithoutDirectFewV2Pair() public requireFork {
         assertEq(ISwapV2Factory(RING_FACTORY).getPair(FW_ETH, FW_USDS), address(0), "test assumes no direct pair");
 
         PoolKey memory ethUsdsKey = PoolKey({
@@ -461,17 +378,8 @@ contract RingAggregatorHookForkTest is Test {
             hooks: IHooks(address(hook))
         });
 
-        IPoolManager(V4_PM).initialize(ethUsdsKey, INIT_PRICE);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
         vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdsKey, p, s, "");
+        IPoolManager(V4_PM).initialize(ethUsdsKey, INIT_PRICE);
     }
 
     // ─────────── Initialize is rejected for invalid configs ───────────
@@ -633,11 +541,12 @@ contract RingAggregatorHookForkTest is Test {
         assertLt(int256(d1), 0, "delta.amount1 should be negative");
     }
 
-    // ─────────── Calldata-routed e2e: fwETH -> fwUSDT -> fwUSDC ───────────
+    // ─────────── Non-empty hookData is ignored in direct-only mode ───────────
 
-    function test_fork_calldataRoute_ETH_to_USDC_viaUSDT_exactInput() public requireFork {
+    function test_fork_nonEmptyHookData_ETH_to_USDC_exactInput_usesDirectRoute() public requireFork {
         uint256 amountIn = 0.01 ether;
-        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 1);
+        bytes memory hookData = hex"01";
+        uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, amountIn));
 
         vm.deal(USER, amountIn);
         uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
@@ -649,19 +558,19 @@ contract RingAggregatorHookForkTest is Test {
         PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
 
         vm.prank(USER);
-        BalanceDelta delta = swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, routeData);
+        BalanceDelta delta = swapRouter.swap{value: amountIn}(ethUsdcKey, params, settings, hookData);
 
         uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
         uint256 feeAccrued = IERC20(FW_USDC).balanceOf(address(burner)) - burnerFwUsdcBefore;
-        assertGt(received, 0, "user receives USDC through calldata route");
+        assertEq(received, expectedNetOut, "non-empty hookData still uses direct route");
         assertGt(feeAccrued, 0, "burner accrues output-token fee");
         assertEq(int256(delta.amount0()), -int256(amountIn), "delta.amount0 mismatch");
         assertEq(int256(delta.amount1()), int256(received), "delta.amount1 mismatch");
     }
 
-    function test_fork_calldataRoute_ETH_to_USDC_viaUSDT_exactOutput() public requireFork {
+    function test_fork_nonEmptyHookData_ETH_to_USDC_exactOutput_usesDirectRoute() public requireFork {
         uint256 amountOut = 10_000;
-        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 1 ether);
+        bytes memory hookData = hex"01";
 
         vm.deal(USER, 1 ether);
         uint256 userUsdcBefore = IERC20(USDC).balanceOf(USER);
@@ -673,11 +582,11 @@ contract RingAggregatorHookForkTest is Test {
         PoolSwapTest.TestSettings memory settings = PoolSwapTest.TestSettings(false, false);
 
         vm.prank(USER);
-        BalanceDelta delta = swapRouter.swap{value: 1 ether}(ethUsdcKey, params, settings, routeData);
+        BalanceDelta delta = swapRouter.swap{value: 1 ether}(ethUsdcKey, params, settings, hookData);
 
         uint256 received = IERC20(USDC).balanceOf(USER) - userUsdcBefore;
         uint256 feeAccrued = IERC20(FW_USDC).balanceOf(address(burner)) - burnerFwUsdcBefore;
-        assertEq(received, amountOut, "user receives exact output through calldata route");
+        assertEq(received, amountOut, "user receives exact output through direct route");
         assertGt(feeAccrued, 0, "burner accrues output-token fee");
         assertEq(int256(delta.amount1()), int256(amountOut), "delta.amount1 mismatch");
         assertLt(int256(delta.amount0()), 0, "delta.amount0 should be negative");
@@ -754,19 +663,19 @@ contract RingAggregatorHookForkTest is Test {
     function test_attack_directBeforeSwap_revertsNotPoolManager() public requireFork {
         SwapParams memory p =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
-        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeSwap(address(this), ethUsdcKey, p, "");
     }
 
     function test_attack_directBeforeInitialize_revertsNotPoolManager() public requireFork {
-        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeInitialize(address(this), ethUsdcKey, INIT_PRICE);
     }
 
     function test_attack_directBeforeAddLiquidity_revertsNotPoolManager() public requireFork {
         ModifyLiquidityParams memory p =
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 1e18, salt: bytes32(0)});
-        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeAddLiquidity(address(this), ethUsdcKey, p, "");
     }
 
@@ -954,121 +863,7 @@ contract RingAggregatorHookForkTest is Test {
         vm.clearMockedCalls();
     }
 
-    // ─── E. Calldata route validation / slippage red-team ───
-
-    function test_attack_calldataRoute_exactInput_minOutReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, type(uint256).max);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_exactOutput_maxInReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 1);
-
-        vm.deal(USER, 1 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: int256(1e6), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 1 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_zeroLimitReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_ETH, FW_USDT, FW_USDC, 0);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_endpointMismatchReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_USDC, FW_USDT, FW_ETH, 1);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_nonCanonicalFewTokenReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_ETH, address(0xDEAD), FW_USDC, 1);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_nonDefaultIntermediateReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_ETH, FW_UNI, FW_USDC, 1);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_duplicateTokenReverts() public requireFork {
-        bytes memory routeData = _routeData4(FW_ETH, FW_USDT, FW_ETH, FW_USDC, 1);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    function test_attack_calldataRoute_missingPairReverts() public requireFork {
-        bytes memory routeData = _routeData3(FW_ETH, FW_USDR, FW_USDC, 1);
-
-        vm.deal(USER, 0.01 ether);
-        SwapParams memory p = SwapParams({
-            zeroForOne: true, amountSpecified: -int256(0.01 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
-        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
-
-        vm.prank(USER);
-        vm.expectRevert();
-        swapRouter.swap{value: 0.01 ether}(ethUsdcKey, p, s, routeData);
-    }
-
-    // ─── F. Reentrancy ───
+    // ─── E. Reentrancy ───
 
     function test_attack_sweepReentrancy_blockedByNonReentrant() public requireFork {
         ReentrantSweepReceiver template = new ReentrantSweepReceiver(address(hook));
@@ -1082,7 +877,7 @@ contract RingAggregatorHookForkTest is Test {
         assertEq(address(hook).balance, 1 ether, "ETH safe in hook, no partial drain");
     }
 
-    // ─── G. Constructor zero-address checks ───
+    // ─── F. Constructor zero-address checks ───
 
     function _deployRaw(
         address fewFactory_,
@@ -1091,25 +886,13 @@ contract RingAggregatorHookForkTest is Test {
         address feeRecipient_,
         address uniBurner_
     ) internal {
-        _deployRawWithConnectors(fewFactory_, fewV2Factory_, weth_, feeRecipient_, uniBurner_, _defaultConnectors());
-    }
-
-    function _deployRawWithConnectors(
-        address fewFactory_,
-        address fewV2Factory_,
-        address weth_,
-        address feeRecipient_,
-        address uniBurner_,
-        address[6] memory defaultConnectors
-    ) internal {
         new HookNoAddressCheck(
             IPoolManager(V4_PM),
             IFewFactory(fewFactory_),
             ISwapV2Factory(fewV2Factory_),
             IWETH9(weth_),
             feeRecipient_,
-            uniBurner_,
-            defaultConnectors
+            uniBurner_
         );
     }
 
@@ -1136,22 +919,6 @@ contract RingAggregatorHookForkTest is Test {
     function test_attack_constructor_zeroUniBurner_reverts() public requireFork {
         vm.expectRevert(RingAggregatorHook.ZeroAddress.selector);
         _deployRaw(FEW_FACTORY, RING_FACTORY, WETH, FEE_RECIPIENT, address(0));
-    }
-
-    function test_attack_constructor_nonCanonicalDefaultConnector_reverts() public requireFork {
-        address[6] memory connectors = _defaultConnectors();
-        connectors[5] = address(0xDEAD);
-
-        vm.expectRevert();
-        _deployRawWithConnectors(FEW_FACTORY, RING_FACTORY, WETH, FEE_RECIPIENT, address(burner), connectors);
-    }
-
-    function test_attack_constructor_duplicateDefaultConnector_reverts() public requireFork {
-        address[6] memory connectors = _defaultConnectors();
-        connectors[5] = FW_USDC;
-
-        vm.expectRevert(abi.encodeWithSelector(RingAggregatorHook.DuplicateRouteToken.selector, FW_USDC));
-        _deployRawWithConnectors(FEW_FACTORY, RING_FACTORY, WETH, FEE_RECIPIENT, address(burner), connectors);
     }
 
     // ════════════════════════════════════════════════════════════════════════

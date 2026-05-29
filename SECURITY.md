@@ -22,11 +22,10 @@ We aim to acknowledge within **24 hours** and provide an initial assessment with
 - `src/RingAggregatorHook.sol`
 - `src/RingUniBurner.sol`
 - `src/lib/FewV2Math.sol`
-- `src/base/DeltaResolver.sol`, `src/utils/BaseHook.sol`
 - Any deployed instance of the above on a chain where Ring has announced an official deployment (see `DEPLOYMENTS.md` once populated).
 
 ### Out of scope
-- `lib/` dependencies (Uniswap v4-core, OpenZeppelin, permit2, solmate, forge-std) — report upstream.
+- `lib/` dependencies (Uniswap v4-core, Uniswap v4-periphery, OpenZeppelin, permit2, solmate, forge-std) — report upstream.
 - Ring Few Protocol / FewV2 contracts — separate codebases with their own disclosure process.
 - Uniswap TokenJar / Firepit — report to Uniswap.
 - Findings that require the one trusted role — the **RingUniBurner owner / multisig signer** — to act maliciously **and** are already documented in `KNOWN_ISSUES.md` as accepted residual risk. (Note: the hook itself is ownerless; the burner is the only privileged contract.) Novel burner-owner-compromise vectors *not* covered there are in scope.
@@ -83,10 +82,10 @@ Before reporting, check whether the vector is already mitigated:
 - `onlyPoolManager` on every V4 callback (Cork-class).
 - `nonReentrant` on `_beforeSwap` and `sweep`.
 - `wrap`/`unwrap` return-value equality checks (Bunni-class lying token → fail closed).
-- Empty-hookData default routing is bounded to direct + 6 immutable connectors; calldata-route intermediates are restricted to the same fixed connector set. No admin-registered routes and no user-supplied pair addresses.
+- Direct-only routing: every pool maps to one canonical direct FewV2 pair. No connector search, no calldata path engine, no admin-registered routes, and no user-supplied pair addresses.
 - `uniBurner`, `fewFactory`, `fewV2Factory`, `weth`, `feeRecipient` are all **immutable** — no setters, no rotation surface.
 - `DegeneratePair` reserve sentinel (MIN_PAIR_RESERVE).
 - The hook is **ownerless** — no owner, no pause, no upgrade path. (RingUniBurner, a separate contract, uses `Ownable2Step` for its `emergencyWithdraw` / `setFlushPaused`.)
-- Constructor zero-address checks on all immutables + 6 post-deploy state assertions.
+- Constructor zero-address checks on all immutables and deployment-script state assertions.
 
 Full inventory: `docs/OWNER_KEY_COMPROMISE.md`, `KNOWN_ISSUES.md`, `docs/SLITHER_TRIAGE.md`.

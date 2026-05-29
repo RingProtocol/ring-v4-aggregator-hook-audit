@@ -6,10 +6,11 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../src/RingAggregatorHook.sol";
-import {IFewFactory} from "../src/interfaces/IFewFactory.sol";
-import {ISwapV2Factory, IWETH9} from "../src/interfaces/IFewV2.sol";
+import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
+import {ISwapV2Factory} from "../src/interfaces/external/IFewV2.sol";
 
 /// @notice Deploy RingAggregatorHook through the canonical CREATE2 proxy and
 ///         initialize the first ETH/USDC pool.
@@ -42,12 +43,6 @@ contract DeployMainnet is Script {
     address constant USDC_DEFAULT = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant FEW_FACTORY_DEFAULT = 0x7D86394139bf1122E82FDF45Bb4e3b038A4464DD;
     address constant RING_FACTORY_DEFAULT = 0xeb2A625B704d73e82946D8d026E1F588Eed06416;
-    address constant FW_WETH_DEFAULT = 0xa250CC729Bb3323e7933022a67B52200fE354767;
-    address constant FW_WBTC_DEFAULT = 0x2078f336Fdd260f708BEc4a20c82b063274E1b23;
-    address constant FW_USDC_DEFAULT = 0x0492560FA7Cfd6A85E50D8bE3F77318994F8f429;
-    address constant FW_USDT_DEFAULT = 0xef87f4608e601E8564800265AeE1c1FfaDF73283;
-    address constant FW_DAI_DEFAULT = 0x8A6fe57C08C84e0f4eE97aAe68a62e820a37d259;
-    address constant FW_USDR_DEFAULT = 0x29A294F8FE285Dfb259705213e375eCb7Fcf9d9b;
 
     /// @dev sqrtPriceX96 ≈ 1.0. Routing-api never reads this for hooks with
     ///      beforeSwapReturnDelta=true — it's only required so PoolManager.initialize doesn't reject.
@@ -67,7 +62,6 @@ contract DeployMainnet is Script {
         address usdc = vm.envOr("USDC", USDC_DEFAULT);
         address fewFactory = vm.envOr("FEW_FACTORY", FEW_FACTORY_DEFAULT);
         address fewV2Factory = vm.envOr("FEW_V2_FACTORY", RING_FACTORY_DEFAULT);
-        address[6] memory defaultConnectors = _defaultConnectors();
         bool skipInitPool = vm.envOr("SKIP_INIT_POOL", false);
 
         console2.log("=== Pre-flight ===");
@@ -85,8 +79,7 @@ contract DeployMainnet is Script {
             ISwapV2Factory(fewV2Factory),
             IWETH9(weth),
             feeRecipient,
-            uniBurner,
-            defaultConnectors
+            uniBurner
         );
 
         // CREATE2 proxy ABI: data = abi.encodePacked(salt, init_code)
@@ -124,9 +117,6 @@ contract DeployMainnet is Script {
         require(address(deployed.fewV2Factory()) == fewV2Factory, "fewV2Factory mismatch in deployed hook");
         require(address(deployed.weth()) == weth, "weth mismatch in deployed hook");
         require(deployed.PROTOCOL_FEE_BPS() == 5, "PROTOCOL_FEE_BPS must be 5");
-        for (uint256 i = 0; i < defaultConnectors.length; ++i) {
-            require(deployed.defaultConnector(i) == defaultConnectors[i], "default connector mismatch");
-        }
 
         console2.log("=== Hook deployed ===");
         console2.log("Address:", hookAddr);
@@ -163,14 +153,5 @@ contract DeployMainnet is Script {
         console2.log("  2. Submit hook to canonical Uniswap hooklist registry");
         console2.log("  3. PR to ring-routing-api allowlist");
         console2.log("  4. Run smoke swap (small ETH -> USDC) to confirm e2e");
-    }
-
-    function _defaultConnectors() internal view returns (address[6] memory connectors) {
-        connectors[0] = vm.envOr("FW_WETH", FW_WETH_DEFAULT);
-        connectors[1] = vm.envOr("FW_WBTC", FW_WBTC_DEFAULT);
-        connectors[2] = vm.envOr("FW_USDC", FW_USDC_DEFAULT);
-        connectors[3] = vm.envOr("FW_USDT", FW_USDT_DEFAULT);
-        connectors[4] = vm.envOr("FW_DAI", FW_DAI_DEFAULT);
-        connectors[5] = vm.envOr("FW_USDR", FW_USDR_DEFAULT);
     }
 }

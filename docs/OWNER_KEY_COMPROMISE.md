@@ -1,7 +1,7 @@
 # Residual Key & Owner-Compromise Threat Model
 
 > **Premise**: the hook (`RingAggregatorHook`) is **ownerless** — no owner, no pause, no admin
-> routes, no uniBurner rotation, immutable wiring, and immutable default connectors. The classic
+> routes, no uniBurner rotation, and immutable direct-pair wiring. The classic
 > "owner key stolen" threat does **not apply to the hook at all**, because there is no hook owner
 > key to steal.
 >
@@ -26,13 +26,13 @@ gone. Every attack vector below that a compromised **hook** owner could have run
 | Eliminated owner power | Old attack it enabled | Status now |
 |---|---|---|
 | `setSwapsPaused` | Griefing: pause all swaps, hold protocol hostage | ❌ removed — no pause exists |
-| `proposeRoute` / `executeProposedRoute` | Register a route through an attacker-thin pair (bounded by slippage, but a nuisance) | ❌ removed — there is no route registry; default connectors are immutable and calldata routes are per-transaction |
+| `proposeRoute` / `executeProposedRoute` | Register a route through an attacker-thin pair (bounded by slippage, but a nuisance) | ❌ removed — there is no route registry; each pool uses the direct factory-derived FewV2 pair |
 | `proposeUniBurner` / `executeProposedUniBurner` | Rotate the fee sink to an attacker address | ❌ removed — `uniBurner` is immutable |
 | `transferOwnership` (of the hook) | Take over all of the above | ❌ removed — hook has no owner |
-| owner-set `_approvedIntermediate` | Select hidden route assets after deployment | ❌ removed — calldata intermediates must be immutable default connectors |
+| owner-set `_approvedIntermediate` | Select hidden route assets after deployment | ❌ removed — there are no hidden intermediates in the hook |
 
 There is no hook owner, no hook pause, no hook upgrade path. The hook's pricing and routing are
-fully determined by immutable wiring + on-chain FewV2 state + the caller's per-transaction calldata path when present. No key can change the default connector set after deployment.
+fully determined by immutable wiring and direct on-chain FewV2 pair state. No key can change routing after deployment.
 
 ---
 
@@ -88,7 +88,7 @@ state. The renounce path is hardened (see contract).
 |---|---|
 | **User swap funds** | Never custodied. Each swap is atomic: `take → wrap → fewV2 swap → unwrap → settle`, with `WrapMismatch` / `UnwrapMismatch` / slippage guards. A revert rolls back the whole tx. |
 | **Hook balance** | ~0 between txs. `sweep(token)` is permissionless and hard-wired to the immutable `feeRecipient` — no key can redirect it. |
-| **Routing / pricing** | Immutable defaults and per-transaction calldata only. No owner can change factories, fees, connectors, pair derivation, or pause swaps. |
+| **Routing / pricing** | Direct pair is derived from immutable factories. No owner can change factories, fees, pair derivation, or pause swaps. |
 | **TokenJar destination** | Immutable in `RingUniBurner`; the key cannot redirect the TokenJar destination, only withdraw pre-flush balances. |
 
 ---

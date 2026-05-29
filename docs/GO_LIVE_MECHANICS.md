@@ -120,16 +120,16 @@ IPoolManager(V4_PM).initialize(
 );
 ```
 
-`beforeInitialize` validates that both endpoints have canonical FewTokens. The actual
-FewV2 route is checked at quote/swap time: empty `hookData` tries the direct pair plus
-the fixed connector set (`fwWETH`, `fwWBTC`, `fwUSDC`, `fwUSDT`, `fwDAI`, `fwUSDR`);
-if none is available, the quote/swap reverts `NoFewV2Route`.
+`beforeInitialize` validates that both endpoints have canonical FewTokens and that the
+direct FewV2 pair exists. The hook no longer searches connectors internally. If a better
+`A -> X -> B` route exists, Uniswap routing should compose two hook pools: `A -> X` and
+`X -> B`.
 
 Initialize one pool per pair we want live:
 
 - ETH/USDC — fwETH/fwUSDC pair exists ✅
-- ETH/WBTC — direct fwETH/fwWBTC or a fixed-connector route such as fwETH/fwUSDC/fwWBTC
-- USDC/DAI — direct fwUSDC/fwDAI or a fixed-connector route
+- ETH/WBTC — requires a direct fwETH/fwWBTC pair, or routing composes ETH/USDC + USDC/WBTC
+- USDC/DAI — requires a direct fwUSDC/fwDAI pair, or routing composes through another pool
 - … etc.
 
 **Why `initialize` is necessary at all**: the router discovers tradable pairs by indexing
@@ -183,7 +183,7 @@ So the order is: deploy → initialize → hooklist (registry) → **routing-api
 2. routing-api queries every available pool (V2, V3, V4, V4+hooks)
 3. our hook pool is in the candidate set (because it's allowlisted)
 4. routing-api / V4Quoter calls our hook's quote with empty `hookData`
-   → hook computes the best direct-or-fixed-connector output via FewV2
+   → hook computes the direct FewV2 pair output
 5. if our quote is best (whole route OR one leg of a split), the swap is routed to us
 6. user's swap executes: tokenIn → wrap → FewV2 swap → unwrap → tokenOut
 7. 5 bps of output is skimmed to RingUniBurner -> TokenJar; Firepit handles downstream UNI burn
