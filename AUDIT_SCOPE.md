@@ -35,14 +35,15 @@ forge test --no-match-path "test/fork/*"   # 30 hermetic tests (no RPC needed)
 ## 2. In scope (the Ring-written production logic you bill for)
 
 Line counts below are **nSLOC**: comments, blank lines, tests, scripts, interfaces, docs, and third-party dependencies excluded.
+NatSpec and security-boundary comments are intentionally retained for reviewer clarity and are not included in the nSLOC totals.
 
 | Contract | nSLOC | Role | Priority |
 |---|---:|---|---|
-| `src/RingAggregatorHook.sol` | 587 | The V4 hook. Default direct-or-fixed-connector routing, bounded calldata routing, wrap/unwrap, 5 bps fee skim, permissionless sweep. **Ownerless** — no admin, no pause, immutable wiring. | **CRITICAL — primary focus** |
+| `src/RingAggregatorHook.sol` | 588 | The V4 hook. Default direct-or-fixed-connector routing, bounded calldata routing, wrap/unwrap, 5 bps fee skim, permissionless sweep. **Ownerless** — no admin, no pause, immutable wiring. | **CRITICAL — primary focus** |
 | `src/RingUniBurner.sol` | 54 | TokenJar push-source adapter. Unwraps fewToken → underlying → forwards to Uniswap TokenJar. **Owner-managed** (the only privileged role in the system). | **HIGH** |
 | `src/lib/FewV2Math.sol` | 64 | V2 `getAmountOut` / `getAmountIn` (30 bps fee math). | **HIGH** (math correctness) |
 
-**Total Ring-written production review surface: 705 nSLOC.**
+**Total Ring-written production review surface: 706 nSLOC.**
 
 ---
 
@@ -52,9 +53,9 @@ These are minimal ABI declarations against existing deployed systems. They conta
 
 | File | nSLOC | Purpose |
 |---|---:|---|---|
-| `src/interfaces/IFewFactory.sol` | 4 | `getWrappedToken` lookup only |
-| `src/interfaces/IFewWrappedToken.sol` | 6 | `token`, `wrap`, `unwrap` only |
-| `src/interfaces/IFewV2.sol` | 10 | FewV2 factory/pair ABI only |
+| `src/interfaces/external/IFewFactory.sol` | 4 | `getWrappedToken` lookup only |
+| `src/interfaces/external/IFewWrappedToken.sol` | 6 | `token`, `wrap`, `unwrap` only |
+| `src/interfaces/external/IFewV2.sol` | 10 | FewV2 factory/pair ABI only |
 
 **Total ABI-only interface surface: 20 nSLOC.**
 
@@ -84,7 +85,7 @@ The repo deliberately imports standard helper code instead of copying it into `s
 | Ring **Few Protocol** fewToken contracts | Separately audited Ring codebase. The hook treats `wrap`/`unwrap` as 1:1 and **verifies the return value equals input** (`WrapMismatch`/`UnwrapMismatch` reverts) — so a misbehaving fewToken fails closed. |
 | Ring **FewV2** AMM pair/factory | Separately audited Ring codebase (V2 fork). The hook validates pair token ordering + reserves on every swap. |
 | Uniswap **TokenJar** / **Firepit** | Uniswap-governed protocol-fees pipeline (`github.com/Uniswap/protocol-fees`). RingUniBurner only `safeTransfer`s to the immutable TokenJar address. |
-| `script/` deploy scripts | Reviewable on request, but not the security boundary. They run post-deploy state assertions for all hook immutables, including the 6 default connectors. |
+| `script/` deploy scripts | Deployment reference only, not production contract logic and not part of the security boundary. Reviewable on request; they run post-deploy state assertions for all hook immutables, including the 6 default connectors. |
 | `test/` | Not billed; useful as executable spec. |
 
 ---

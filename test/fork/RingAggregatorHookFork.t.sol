@@ -21,9 +21,9 @@ import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../../src/RingAggregatorHook.sol";
 import {RingUniBurner} from "../../src/RingUniBurner.sol";
-import {IFewFactory} from "../../src/interfaces/IFewFactory.sol";
-import {IFewWrappedToken} from "../../src/interfaces/IFewWrappedToken.sol";
-import {ISwapV2Pair, ISwapV2Factory} from "../../src/interfaces/IFewV2.sol";
+import {IFewFactory} from "../../src/interfaces/external/IFewFactory.sol";
+import {IFewWrappedToken} from "../../src/interfaces/external/IFewWrappedToken.sol";
+import {ISwapV2Pair, ISwapV2Factory} from "../../src/interfaces/external/IFewV2.sol";
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {ImmutableState} from "v4-periphery/src/base/ImmutableState.sol";
 

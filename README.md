@@ -72,9 +72,10 @@ src/
 ├── RingAggregatorHook.sol        # main hook contract (~772 LOC, ownerless)
 ├── RingUniBurner.sol             # TokenJar push-source adapter (~157 LOC, owner-managed)
 ├── interfaces/
-│   ├── IFewWrappedToken.sol      # Ring fewToken wrap/unwrap
-│   ├── IFewFactory.sol           # token → fewToken lookup
-│   └── IFewV2.sol                # ISwapV2Pair / ISwapV2Factory
+│   └── external/                 # ABI-only references, not Ring production logic
+│       ├── IFewWrappedToken.sol  # Ring fewToken wrap/unwrap
+│       ├── IFewFactory.sol       # token → fewToken lookup
+│       └── IFewV2.sol            # ISwapV2Pair / ISwapV2Factory
 └── lib/
     └── FewV2Math.sol             # V2 getAmountOut + getAmountIn (30 bps fee)
 

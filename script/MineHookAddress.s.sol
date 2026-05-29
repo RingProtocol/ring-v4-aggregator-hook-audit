@@ -8,8 +8,8 @@ import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
 import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../src/RingAggregatorHook.sol";
-import {IFewFactory} from "../src/interfaces/IFewFactory.sol";
-import {ISwapV2Factory} from "../src/interfaces/IFewV2.sol";
+import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
+import {ISwapV2Factory} from "../src/interfaces/external/IFewV2.sol";
 
 /// @notice Mine a CREATE2 salt for RingAggregatorHook so its address encodes the
 ///         beforeInitialize | beforeAddLiquidity | beforeSwap | beforeSwapReturnsDelta flags

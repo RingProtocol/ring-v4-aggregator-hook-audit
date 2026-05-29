@@ -18,9 +18,9 @@ import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {DeltaResolver} from "v4-periphery/src/base/DeltaResolver.sol";
 import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
-import {IFewWrappedToken} from "./interfaces/IFewWrappedToken.sol";
-import {IFewFactory} from "./interfaces/IFewFactory.sol";
-import {ISwapV2Pair, ISwapV2Factory} from "./interfaces/IFewV2.sol";
+import {IFewWrappedToken} from "./interfaces/external/IFewWrappedToken.sol";
+import {IFewFactory} from "./interfaces/external/IFewFactory.sol";
+import {ISwapV2Pair, ISwapV2Factory} from "./interfaces/external/IFewV2.sol";
 import {FewV2Math} from "./lib/FewV2Math.sol";
 
 /// @title RingAggregatorHook (admin-less variant — no owner, no pause)

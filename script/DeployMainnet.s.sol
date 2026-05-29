@@ -9,8 +9,8 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../src/RingAggregatorHook.sol";
-import {IFewFactory} from "../src/interfaces/IFewFactory.sol";
-import {ISwapV2Factory} from "../src/interfaces/IFewV2.sol";
+import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
+import {ISwapV2Factory} from "../src/interfaces/external/IFewV2.sol";
 
 /// @notice Deploy RingAggregatorHook through the canonical CREATE2 proxy and
 ///         initialize the first ETH/USDC pool.
