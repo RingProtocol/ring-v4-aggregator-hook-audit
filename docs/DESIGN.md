@@ -288,7 +288,7 @@ External calls in the hook are limited to:
 Key fail-closed checks:
 
 - Constructor rejects zero addresses
-- `onlyPoolManager` comes from `BaseHook`
+- `onlyPoolManager` comes from the pinned Uniswap v4-periphery `BaseHook`
 - `nonReentrant` covers swap and sweep
 - `WrapMismatch` and `UnwrapMismatch` reject non-1:1 wrapper behavior
 - `InvalidRouteIntermediate` rejects hidden calldata intermediates outside the fixed connector set

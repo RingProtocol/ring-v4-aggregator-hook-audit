@@ -33,8 +33,8 @@ The earlier admin design used owner-registered multi-hop routes to cover FewV2 h
 | 1 | `ReentrancyGuard` | OpenZeppelin v5 | `import {ReentrancyGuard}` | Direct inheritance |
 | 2 | `SafeERC20` / `forceApprove` | OpenZeppelin v5 | `import {SafeERC20}` | Direct library use |
 | 3 | `SafeCast` | Uniswap v4-core | `import {SafeCast}` | Direct library use |
-| 4 | `BaseHook` + `onlyPoolManager` | Uniswap v4-periphery pattern | `src/utils/BaseHook.sol` | Inlined to pin behavior and avoid dependency drift |
-| 5 | `DeltaResolver` take/settle helpers | Uniswap v4-periphery pattern | `src/base/DeltaResolver.sol` | Minimal local helper |
+| 4 | `BaseHook` + `onlyPoolManager` | Uniswap v4-periphery v1.0.2 | `v4-periphery/src/utils/BaseHook.sol` | Direct inheritance from pinned Uniswap submodule (`ad04c9f`) |
+| 5 | `DeltaResolver` take/settle helpers | Uniswap v4-periphery v1.0.2 | `v4-periphery/src/base/DeltaResolver.sol` | Direct inheritance from pinned Uniswap submodule (`ad04c9f`) |
 | 6 | Full `beforeSwapReturnDelta` absorption | Uniswap v4 hook interface | `_beforeSwap` return value | Native v4 custom-accounting design |
 | 7 | `getAmountOut` / `getAmountIn` math | `UniswapV2Library` formula | `src/lib/FewV2Math.sol` | Same V2 constant-product math and rounding shape |
 | 8 | `Ownable2Step` for the burner only | OpenZeppelin v5 | `RingUniBurner.sol` | The hook itself is ownerless; only the fee adapter has an owner |
@@ -96,7 +96,7 @@ RingAggregatorHook belongs to the v4 aggregator-hook category:
 The build uses standard components and removes the custom admin route registry from the earlier design:
 
 - **Permissions:** the hook has no owner, no pause, and no upgrade path. This follows the same immutable-router philosophy as Universal Router. The only owner is on the separate `RingUniBurner` fee adapter.
-- **Hook base:** local `BaseHook` and `DeltaResolver` follow v4-periphery patterns.
+- **Hook base:** `BaseHook` and `DeltaResolver` are inherited directly from the pinned Uniswap v4-periphery submodule.
 - **AMM math:** V2 constant-product math matches the `UniswapV2Library` shape.
 - **Route execution:** direct V2 pair interaction follows 1inch / Uniswap router practice; route candidates are bounded.
 - **Liquidity source:** `fewFactory` and `fewV2Factory` are immutable.

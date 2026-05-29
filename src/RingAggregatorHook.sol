@@ -15,8 +15,8 @@ import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/Pool
 import {BeforeSwapDelta, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 
-import {BaseHook} from "./utils/BaseHook.sol";
-import {DeltaResolver} from "./base/DeltaResolver.sol";
+import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
+import {DeltaResolver} from "v4-periphery/src/base/DeltaResolver.sol";
 import {IFewWrappedToken} from "./interfaces/IFewWrappedToken.sol";
 import {IFewFactory} from "./interfaces/IFewFactory.sol";
 import {ISwapV2Pair, ISwapV2Factory, IWETH9} from "./interfaces/IFewV2.sol";
@@ -209,11 +209,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         });
     }
 
-    // ============ DeltaResolver glue ============
-    function _poolManager() internal view override returns (IPoolManager) {
-        return poolManager;
-    }
-
+    // ============ DeltaResolver payment glue ============
     function _pay(
         Currency currency,
         address,

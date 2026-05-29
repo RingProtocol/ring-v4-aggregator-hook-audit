@@ -22,7 +22,8 @@ import {RingUniBurner} from "../../src/RingUniBurner.sol";
 import {IFewFactory} from "../../src/interfaces/IFewFactory.sol";
 import {IFewWrappedToken} from "../../src/interfaces/IFewWrappedToken.sol";
 import {ISwapV2Pair, ISwapV2Factory, IWETH9} from "../../src/interfaces/IFewV2.sol";
-import {BaseHook} from "../../src/utils/BaseHook.sol";
+import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
+import {ImmutableState} from "v4-periphery/src/base/ImmutableState.sol";
 import {HookMiner} from "../utils/HookMiner.sol";
 
 interface IV4Quoter {
@@ -79,7 +80,7 @@ contract HookNoAddressCheck is RingAggregatorHook {
         address _uniBurner,
         address[6] memory _defaultConnectors
     ) RingAggregatorHook(_pm, _fewFactory, _fewV2Factory, _weth, _feeRecipient, _uniBurner, _defaultConnectors) {}
-    function _validateHookAddress(BaseHook) internal pure override {}
+    function validateHookAddress(BaseHook) internal pure override {}
 }
 
 /// @notice Mainnet fork e2e for RingAggregatorHook (admin-less variant).
@@ -754,19 +755,19 @@ contract RingAggregatorHookForkTest is Test {
     function test_attack_directBeforeSwap_revertsNotPoolManager() public requireFork {
         SwapParams memory p =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
-        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeSwap(address(this), ethUsdcKey, p, "");
     }
 
     function test_attack_directBeforeInitialize_revertsNotPoolManager() public requireFork {
-        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeInitialize(address(this), ethUsdcKey, INIT_PRICE);
     }
 
     function test_attack_directBeforeAddLiquidity_revertsNotPoolManager() public requireFork {
         ModifyLiquidityParams memory p =
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 1e18, salt: bytes32(0)});
-        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeAddLiquidity(address(this), ethUsdcKey, p, "");
     }
 

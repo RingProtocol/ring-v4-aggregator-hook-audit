@@ -1,11 +1,11 @@
 # Slither Triage Report
 
-> **Tool**: Slither (Trail of Bits, pip release)
-> **Date**: 2026-05-25
-> **Scope**: `src/RingAggregatorHook.sol` + `src/RingUniBurner.sol` + helpers (`BaseHook.sol`, `DeltaResolver.sol`, `FewV2Math.sol`)
+> **Tool**: Slither 0.11.5 (Trail of Bits, pip release)
+> **Date**: 2026-05-29
+> **Scope**: `src/RingAggregatorHook.sol` + `src/RingUniBurner.sol` + `src/lib/FewV2Math.sol`. Uniswap `BaseHook` / `DeltaResolver` are inherited from pinned `lib/v4-periphery` and excluded as third-party dependency code.
 > **Build**: the **ownerless calldata-route** hook + 5 bps TokenJar fee pipeline
-> **Result**: **27 detector hits, 0 real findings**. All triaged below with reasoning.
-> **Run summary**: `35 contracts analyzed (97 detectors), 27 results found`.
+> **Result**: **22 detector hits, 0 real findings**. All triaged below with reasoning.
+> **Run summary**: `42 contracts analyzed (98 detectors), 22 results found`.
 
 This document is **intended to be submitted as part of the package to external audit firms** (Spearbit / Cantina / Code4rena / OpenZeppelin). It shows the team has run the standard static analyzer and explained every output — saving auditor time.
 
@@ -38,19 +38,18 @@ slither . \
 
 ---
 
-## II. Findings (27) — all false-positive or by-design
+## II. Findings (22) — all false-positive or by-design
 
 | Detector | Count | Locations / reason | Verdict |
 |---|---:|---|---|
 | `calls-loop` | 13 | Constructor default-connector canonical checks; default-route quote search over 6 connectors; calldata path validation/pair derivation; route quote/execution hop loops | By design, bounded |
-| `unused-return` | 4 | `DeltaResolver._settle`; ignored V2 `blockTimestampLast` from `getReserves()` in hop-state helpers | By design |
-| `dead-code` | 3 | `BaseHook` default virtual callback stubs | By design |
+| `unused-return` | 2 | Ignored V2 `blockTimestampLast` from `getReserves()` in hop-state helpers | By design |
 | `reentrancy-events` | 2 | Event emitted after transfer in `_skimUniBurnFee` and `RingUniBurner.emergencyWithdraw` | False positive |
 | `incorrect-equality` | 1 | `RingUniBurner.flush` — `fewBalance == 0` no-op guard | By design |
 | `reentrancy-no-eth` | 1 | `_ensureApproval` writes approval cache after `forceApprove` | False positive |
+| `reentrancy-balance` | 1 | `RingUniBurner.flush` compares unwrap output against the pre-read fewToken balance | False positive |
 | `cyclomatic-complexity` | 1 | `_calldataRoute` groups endpoint/canonical/intermediate/duplicate/pair checks | By design |
 | `low-level-calls` | 1 | `RingAggregatorHook.sweep` native ETH `call` | By design |
-| `unimplemented-functions` | 1 | `RingAggregatorHook` / `getHookPermissions` override-chain quirk | False positive |
 
 ### `calls-loop`: bounded route loops
 
@@ -71,13 +70,13 @@ There is no admin-triggered loop and no stored route state. A bad or long callda
 
 `_ensureApproval` calls `forceApprove(spender, max)` then sets `_approved[token][spender] = true` (an approval cache). The external call is to a Ring fewToken or fewV2 pair (derived from the immutable `fewFactory` / `fewV2Factory`), not arbitrary user code; and the swap entry point `_beforeSwap` is `nonReentrant`, closing any cross-function reentrancy. The cache write being "after" the call only risks a redundant future `forceApprove`, never a fund path. **No fix.**
 
-### `unused-return`: `pm.settle()` return ignored in `DeltaResolver._settle`
-
-`PoolManager.settle()` returns the amount paid; `_settle` does not need it (the amount is already known and asserted by the surrounding delta accounting). This mirrors canonical v4-periphery `DeltaResolver`. **No fix.**
-
 ### `unused-return`: `getReserves()` third field ignored
 
 `(uint112 r0, uint112 r1, ) = ISwapV2Pair(pair).getReserves()` intentionally discards the third field (`blockTimestampLast`), which the hook does not use. Standard V2 idiom. **No fix.**
+
+### `reentrancy-balance`: `RingUniBurner.flush` balance read before unwrap
+
+`flush()` reads the burner's fewToken balance, unwraps exactly that amount, then checks `unwrapped == fewBalance`. The fewToken address is canonical-validated through `fewFactory`, and the function is `nonReentrant`. The pre-read balance is intentionally the accounting target for the unwrap mismatch check; a mismatch reverts and does not create a fund-drain path. **No fix.**
 
 ### `reentrancy-events`: event emitted after `safeTransfer`
 
@@ -85,10 +84,6 @@ There is no admin-triggered loop and no stored route state. A bad or long callda
 - `RingUniBurner.emergencyWithdraw` emits `EmergencyWithdrawn` after `safeTransfer`; the function is `onlyOwner` + `nonReentrant`. 
 
 Neither is a real reentrancy. **No fix.**
-
-### `dead-code`: `BaseHook` abstract default stubs
-
-`BaseHook` provides default `_beforeInitialize` / `_beforeAddLiquidity` / `_beforeSwap` virtual stubs that the concrete `RingAggregatorHook` overrides. Slither flags the base versions as "never used" — a known artifact of the abstract-base pattern. They are part of the inlined v4-periphery `BaseHook` and intentionally retained for upstream parity. **No fix.**
 
 ### `cyclomatic-complexity`: `_calldataRoute`
 
@@ -98,10 +93,6 @@ Neither is a real reentrancy. **No fix.**
 
 `sweep` sends native ETH to the immutable `feeRecipient` via `address(feeRecipient).call{value: amount}("")` — the correct, recommended way to transfer ETH (vs `transfer`/`send` gas-stipend pitfalls). The destination is immutable and the function is `nonReentrant`. **No fix.**
 
-### `unimplemented-functions`: `getHookPermissions`
-
-Slither reports that `RingAggregatorHook` "does not implement `BaseHook.getHookPermissions()`". This is a Slither quirk on the override resolution chain — `getHookPermissions()` **is** implemented in `RingAggregatorHook` (it returns the `0x2888` permission set) and is exercised by every fork test (the hook would not deploy otherwise). **False positive, no fix.**
-
 ---
 
 ## III. Summary
@@ -109,14 +100,13 @@ Slither reports that `RingAggregatorHook` "does not implement `BaseHook.getHookP
 | Category | Count | Disposition |
 |---|---:|---|
 | `calls-loop` | 13 | Bounded default connector / calldata route loops |
-| `unused-return` | 4 | Intentional tuple / return discards |
-| `dead-code` | 3 | Abstract `BaseHook` stubs (overridden) |
+| `unused-return` | 2 | Intentional tuple discards |
 | `reentrancy-events` | 2 | Event-after-transfer; `nonReentrant` + trusted recipients |
 | `incorrect-equality` | 1 | `== 0` no-op guard |
 | `reentrancy-no-eth` | 1 | Approval-cache write; trusted token + `nonReentrant` |
+| `reentrancy-balance` | 1 | Balance snapshot used for unwrap mismatch check |
 | `cyclomatic-complexity` | 1 | Localized route-validation function |
 | `low-level-calls` | 1 | Native ETH transfer (recommended pattern) |
-| `unimplemented-functions` | 1 | Slither override-chain false positive |
-| **Total** | **27** | **0 require a code change** |
+| **Total** | **22** | **0 require a code change** |
 
-All 27 are false-positive or by-design. One real Slither catch (`uninitialized-local` in `_defaultRoute`) was fixed before this final run by explicitly initializing best-route locals. No remaining finding requires a code change.
+All 22 are false-positive or by-design. One real Slither catch (`uninitialized-local` in `_defaultRoute`) was fixed before this final run by explicitly initializing best-route locals. No remaining finding requires a code change.

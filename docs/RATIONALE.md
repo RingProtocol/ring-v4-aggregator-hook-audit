@@ -226,11 +226,11 @@ Coverage is strongest on the two audit-critical contracts:
 
 | File | Line coverage | Function coverage |
 |---|---:|---:|
-| `src/RingAggregatorHook.sol` | 305/314 = 97.13% | 38/38 = 100.00% |
+| `src/RingAggregatorHook.sol` | 303/312 = 97.12% | 37/37 = 100.00% |
 | `src/RingUniBurner.sol` | 26/27 = 96.30% | 5/5 = 100.00% |
 | `src/lib/FewV2Math.sol` | 29/34 = 85.29% | 4/5 = 80.00% |
 
-Repo-wide coverage is lower because scripts and abstract v4 helper stubs are included in LCOV. The audit focus should be per-file behavior on the hook, burner, and math library.
+Repo-wide coverage is lower because scripts and tests are included in LCOV. The audit focus should be per-file behavior on the hook, burner, and math library; Uniswap `BaseHook` / `DeltaResolver` are inherited from pinned `lib/v4-periphery` rather than local Ring source.
 
 ---
 

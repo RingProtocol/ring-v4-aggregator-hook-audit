@@ -139,7 +139,7 @@ Current result on this branch: 88/88 tests passing.
 
 ## 6. Slither Triage
 
-Slither reports 27 results on this branch. The material new class is `calls-loop`:
+Slither reports 22 results on this branch. The material class is still `calls-loop`:
 
 - default auto-route quote loops over exactly 6 fixed connectors
 - constructor canonical FewToken validation over exactly 6 fixed connectors
@@ -153,10 +153,10 @@ This is expected for default auto-routing and calldata routes. The loops are not
 Other repeated findings remain unchanged from the ownerless build:
 
 - `RingUniBurner.flush` strict zero-balance equality: by design no-op branch
+- `RingUniBurner.flush` balance-read reentrancy warning: false positive; `nonReentrant`, canonical fewToken, and unwrap mismatch check
 - approval-cache reentrancy warning: guarded by `nonReentrant`; state is an approval cache only
 - event-after-transfer warnings: telemetry ordering, no state-invariant dependency
 - `_calldataRoute` cyclomatic-complexity warning: expected from one function grouping all path validation checks
-- BaseHook dead-code/unimplemented warning: Slither override-resolution quirk
 - native ETH sweep low-level call: required to forward ETH to immutable `feeRecipient`
 
 No admin/governance risk is introduced by this branch.

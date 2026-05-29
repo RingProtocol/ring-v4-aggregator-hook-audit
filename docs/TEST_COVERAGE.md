@@ -1,6 +1,6 @@
 # Test Coverage — Ownerless Calldata Route Branch
 
-> Last updated: 2026-05-25
+> Last updated: 2026-05-29
 > Command: `ETH_RPC_URL=$ETH_RPC_URL forge coverage --ir-minimum --report lcov`
 > Result: 88/88 tests passed; `lcov.info` generated
 
@@ -17,11 +17,11 @@ The `ownerless-calldata-route` branch was coverage-tested against the full suite
 | Unit tests | 25 |
 | Invariant tests | 5, 10,000 fuzz runs each |
 | Mainnet-fork tests | 58 |
-| Source-only line coverage | 382 / 417 = 91.61% |
-| Source-only function coverage | 55 / 66 = 83.33% |
-| Source-only branch coverage | 73 / 101 = 72.28% |
+| Source-only line coverage | 358 / 373 = 95.98% |
+| Source-only function coverage | 46 / 47 = 97.87% |
+| Source-only branch coverage | 71 / 98 = 72.45% |
 
-The repo-wide headline is lower because Foundry includes deployment scripts, tests, and abstract v4 helper stubs in LCOV. For audit purposes, the useful numbers are the in-scope source files below.
+The repo-wide headline is lower because Foundry includes deployment scripts and tests in LCOV. Uniswap `BaseHook` / `DeltaResolver` are inherited from pinned `lib/v4-periphery` and treated as third-party dependency code, not Ring source.
 
 ---
 
@@ -29,11 +29,9 @@ The repo-wide headline is lower because Foundry includes deployment scripts, tes
 
 | File | Lines | Functions | Branches | Interpretation |
 |---|---:|---:|---:|---|
-| `src/RingAggregatorHook.sol` | 305/314 = 97.13% | 38/38 = 100.00% | 58/79 = 73.42% | Default auto-route, calldata multi-hop swap path, V4Quoter entrypoints, and red-team checks heavily covered |
+| `src/RingAggregatorHook.sol` | 303/312 = 97.12% | 37/37 = 100.00% | 58/79 = 73.42% | Default auto-route, calldata multi-hop swap path, V4Quoter entrypoints, and red-team checks heavily covered |
 | `src/RingUniBurner.sol` | 26/27 = 96.30% | 5/5 = 100.00% | 8/8 = 100.00% | Fee adapter and owner-only paths covered |
 | `src/lib/FewV2Math.sol` | 29/34 = 85.29% | 4/5 = 80.00% | 5/11 = 45.45% | V2 math covered by unit and invariant tests |
-| `src/base/DeltaResolver.sol` | 9/9 = 100.00% | 2/2 = 100.00% | 1/2 = 50.00% | Local take/settle helper covered |
-| `src/utils/BaseHook.sol` | 13/33 = 39.39% | 6/16 = 37.50% | 1/1 = 100.00% | Abstract v4 hook helper; many unused callbacks intentionally unreachable |
 
 ---
 

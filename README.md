@@ -69,18 +69,19 @@ Technical deep-dives (all in-repo, self-contained):
 
 ```
 src/
-├── RingAggregatorHook.sol        # main hook contract (~774 LOC, ownerless)
+├── RingAggregatorHook.sol        # main hook contract (~771 LOC, ownerless)
 ├── RingUniBurner.sol             # TokenJar push-source adapter (~157 LOC, owner-managed)
 ├── interfaces/
 │   ├── IFewWrappedToken.sol      # Ring fewToken wrap/unwrap
 │   ├── IFewFactory.sol           # token → fewToken lookup
 │   └── IFewV2.sol                # ISwapV2Pair / ISwapV2Factory
-├── lib/
-│   └── FewV2Math.sol             # V2 getAmountOut + getAmountIn (30 bps fee)
-├── utils/
-│   └── BaseHook.sol              # minimal inlined v4-periphery BaseHook
-└── base/
-    └── DeltaResolver.sol         # minimal inlined take/settle helper
+└── lib/
+    └── FewV2Math.sol             # V2 getAmountOut + getAmountIn (30 bps fee)
+
+lib/
+└── v4-periphery/                 # pinned Uniswap v4-periphery v1.0.2 submodule
+    ├── src/utils/BaseHook.sol    # official hook callback base
+    └── src/base/DeltaResolver.sol # official take/settle helper
 
 test/
 ├── unit/                         # 25 hermetic unit tests (10 FewV2Math + 15 RingUniBurner)
