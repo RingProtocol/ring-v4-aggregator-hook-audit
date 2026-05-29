@@ -1,7 +1,7 @@
 # Ring V4 Aggregator Hook — Ownerless Design
 
 > Last updated: 2026-05-25
-> Audit target: `RingAggregatorHook` + `RingUniBurner` on `main`, promoted from `ownerless-calldata-route` and frozen by tag `audit-ownerless-calldata-route-2026-05-25-r3`
+> Audit target: `RingAggregatorHook` + `RingUniBurner` on `audit-r3-uniswap-periphery-helpers`, based on frozen tag `audit-ownerless-calldata-route-2026-05-25-r3`
 > Status: implementation complete; 88/88 tests passing; V4Quoter fork tests passing; Slither triaged; coverage regenerated
 
 ---
@@ -363,7 +363,7 @@ As of this update:
 - Build: green
 - Tests: 88/88 passing
 - Coverage: regenerated from `forge coverage --ir-minimum --report lcov`
-- Slither: 27 findings triaged as false positive / by-design; 0 real findings
+- Slither: 22 findings triaged as false positive / by-design; 0 real findings
 - Governance surface: hook has none
 - Residual key: only `RingUniBurner.owner`, documented separately
 

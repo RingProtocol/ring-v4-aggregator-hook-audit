@@ -12,8 +12,9 @@ This document defines exactly what to audit, what is out of scope and why, and w
 | | |
 |---|---|
 | **Repository** | `github.com/RingProtocol/ring-v4-aggregator-hook-audit` |
-| **Build** | The **ownerless calldata-route** hook + 5 bps TokenJar fee pipeline, promoted to `main` for audit. No owner, no pause, no admin routes, immutable wiring, empty-hookData default auto-routing over direct + fixed connectors, and bounded calldata paths. The hook does **not** burn UNI itself; it pushes fees into Uniswap's TokenJar via `RingUniBurner`, and Uniswap's Firepit handles downstream UNI burn. |
-| **Audit tag** | `audit-ownerless-calldata-route-2026-05-25-r3` |
+| **Build** | The **ownerless calldata-route** hook + 5 bps TokenJar fee pipeline, based on `audit-ownerless-calldata-route-2026-05-25-r3` and simplified to inherit Uniswap v4-periphery helpers directly. No owner, no pause, no admin routes, immutable wiring, empty-hookData default auto-routing over direct + fixed connectors, and bounded calldata paths. The hook does **not** burn UNI itself; it pushes fees into Uniswap's TokenJar via `RingUniBurner`, and Uniswap's Firepit handles downstream UNI burn. |
+| **Audit branch** | `audit-r3-uniswap-periphery-helpers` |
+| **Base tag** | `audit-ownerless-calldata-route-2026-05-25-r3` |
 | **Compiler** | Solidity `0.8.26`, `via_ir = true`, optimizer 200 runs, EVM Cancun |
 | **Framework** | Foundry |
 
@@ -23,7 +24,7 @@ Clone:
 ```bash
 git clone --recurse-submodules git@github.com:RingProtocol/ring-v4-aggregator-hook-audit.git
 cd ring-v4-aggregator-hook-audit
-git checkout audit-ownerless-calldata-route-2026-05-25-r3
+git checkout audit-r3-uniswap-periphery-helpers
 forge build
 ETH_RPC_URL=https://… forge test          # 88 tests
 forge test --no-match-path "test/fork/*"   # 30 hermetic tests (no RPC needed)
@@ -31,42 +32,53 @@ forge test --no-match-path "test/fork/*"   # 30 hermetic tests (no RPC needed)
 
 ---
 
-## 2. In scope (the contracts you bill for)
+## 2. In scope (the Ring-written production logic you bill for)
 
-| Contract | LOC | Role | Priority |
+Line counts below are **nSLOC**: comments, blank lines, tests, scripts, interfaces, docs, and third-party dependencies excluded.
+
+| Contract | nSLOC | Role | Priority |
 |---|---:|---|---|
-| `src/RingAggregatorHook.sol` | 774 | The V4 hook. Default direct-or-fixed-connector routing, bounded calldata routing, wrap/unwrap, 5 bps fee skim, permissionless sweep. **Ownerless** — no admin, no pause, immutable wiring. | **CRITICAL — primary focus** |
-| `src/RingUniBurner.sol` | ~157 | TokenJar push-source adapter. Unwraps fewToken → underlying → forwards to Uniswap TokenJar. **Owner-managed** (the only privileged role in the system). | **HIGH** |
-| `src/lib/FewV2Math.sol` | 88 | V2 `getAmountOut` / `getAmountIn` (30 bps fee math). | **HIGH** (math correctness) |
+| `src/RingAggregatorHook.sol` | 587 | The V4 hook. Default direct-or-fixed-connector routing, bounded calldata routing, wrap/unwrap, 5 bps fee skim, permissionless sweep. **Ownerless** — no admin, no pause, immutable wiring. | **CRITICAL — primary focus** |
+| `src/RingUniBurner.sol` | 54 | TokenJar push-source adapter. Unwraps fewToken → underlying → forwards to Uniswap TokenJar. **Owner-managed** (the only privileged role in the system). | **HIGH** |
+| `src/lib/FewV2Math.sol` | 64 | V2 `getAmountOut` / `getAmountIn` (30 bps fee math). | **HIGH** (math correctness) |
 
-**Total net-new core in-scope: ~1,019 LOC.** Including inlined v4 helper shims below, the review surface is ~1,218 LOC.
+**Total Ring-written production review surface: 705 nSLOC.**
 
 ---
 
-## 3. Helper contracts — fast-path review
+## 3. ABI-only local interfaces
 
-These are intentionally minimal inlined copies of canonical Uniswap v4-periphery code. They are **in scope for review but expected to be low-effort** because they are audit-equivalent to already-audited upstream:
+These are minimal ABI declarations against existing deployed systems. They contain no logic and should not be billed as production logic.
 
-| Contract | LOC | Equivalent to | Notes |
+| File | nSLOC | Purpose |
 |---|---:|---|---|
-| `src/utils/BaseHook.sol` | 160 | `v4-periphery/src/utils/BaseHook.sol` | Inlined to avoid dependency-version drift. Diff against upstream is the fastest review path. |
-| `src/base/DeltaResolver.sol` | 44 | `v4-periphery/src/base/DeltaResolver.sol` | take/settle helper. Same fast-path. |
+| `src/interfaces/IFewFactory.sol` | 4 | `getWrappedToken` lookup only |
+| `src/interfaces/IFewWrappedToken.sol` | 6 | `token`, `wrap`, `unwrap` only |
+| `src/interfaces/IFewV2.sol` | 10 | FewV2 factory/pair ABI only |
 
-If the firm prefers, we can swap these for the upstream `v4-periphery` imports — they were inlined only to pin behaviour. Flag this in the kickoff call.
-
----
-
-## 4. Interfaces (in scope, trivial)
-
-`src/interfaces/IFewFactory.sol` (19), `IFewV2.sol` (43), `IFewWrappedToken.sol` (25). Pure interface declarations against Ring's existing, separately-audited Few Protocol + FewV2 contracts. No logic.
+**Total ABI-only interface surface: 20 nSLOC.**
 
 ---
 
-## 5. Out of scope (do not bill)
+## 4. Pinned third-party helpers and libraries (dependency review only)
+
+The repo deliberately imports standard helper code instead of copying it into `src/`. These dependencies are pinned and should be treated as upstream dependency code, not Ring-written production logic.
+
+| Dependency | Commit / source | Used for |
+|---|---|---|
+| `lib/v4-core` | `59d3ecf5` | PoolManager interfaces, hook types, currencies, deltas, SafeCast |
+| `lib/v4-periphery` | `ad04c9f` (`v1.0.2`) | `BaseHook`, `DeltaResolver`, `HookMiner`, `IWETH9` |
+| `lib/openzeppelin-contracts` | `dbb6104c` | `SafeERC20`, `ReentrancyGuard`, `Ownable2Step` |
+| `lib/permit2`, `lib/solmate`, `lib/forge-std` | pinned submodules | upstream / test / tooling dependencies |
+
+---
+
+## 5. Out of scope (do not bill as Ring production logic)
 
 | Item | Why out of scope |
 |---|---|
 | `lib/v4-core` (Uniswap V4 PoolManager) | Audited by Uniswap (OpenZeppelin, Spearbit, Trail of Bits, ABDK, …). Pinned commit `59d3ecf5`. |
+| `lib/v4-periphery` | Official Uniswap periphery helpers. The hook imports `BaseHook`, `DeltaResolver`, `HookMiner`, and `IWETH9` from pinned commit `ad04c9f`. |
 | `lib/openzeppelin-contracts` | OZ's own audited releases. Pinned `dbb6104c`. |
 | `lib/permit2`, `lib/solmate`, `lib/forge-std` | Upstream-audited / test-only. |
 | Ring **Few Protocol** fewToken contracts | Separately audited Ring codebase. The hook treats `wrap`/`unwrap` as 1:1 and **verifies the return value equals input** (`WrapMismatch`/`UnwrapMismatch` reverts) — so a misbehaving fewToken fails closed. |
@@ -81,7 +93,7 @@ If the firm prefers, we can swap these for the upstream `v4-periphery` imports �
 
 | Artifact | File | What it gives you |
 |---|---|---|
-| Static analysis | [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Slither on the ownerless calldata-route build: **27 hits, 0 real**. The added `calls-loop` findings are bounded by the fixed 6-connector set and per-transaction calldata paths. Every hit triaged. |
+| Static analysis | [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Slither on the ownerless calldata-route build: **22 hits, 0 real**. The `calls-loop` findings are bounded by the fixed 6-connector set and per-transaction calldata paths. Every hit triaged. |
 | Threat model | [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md) | The hook is ownerless; this inventories the one residual privileged key — the RingUniBurner owner — and its bounded blast radius. |
 | Known/accepted risks | [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | M1/M2 + M3 (resolved-by-design) + L1-L5 internal findings, with disposition. **Read this first to avoid re-reporting.** |
 | Architecture | `docs/DESIGN.md` | Full design spec. |

@@ -1,4 +1,4 @@
-# Test Coverage — Ownerless Calldata Route Branch
+# Test Coverage — Helper-Externalized Ownerless Calldata Route Branch
 
 > Last updated: 2026-05-29
 > Command: `ETH_RPC_URL=$ETH_RPC_URL forge coverage --ir-minimum --report lcov`
@@ -8,7 +8,7 @@
 
 ## 1. Headline
 
-The `ownerless-calldata-route` branch was coverage-tested against the full suite, including mainnet-fork tests.
+The helper-externalized ownerless calldata-route branch was coverage-tested against the full suite, including mainnet-fork tests.
 
 | Metric | Result |
 |---|---:|

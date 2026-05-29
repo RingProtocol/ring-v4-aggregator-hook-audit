@@ -5,7 +5,7 @@
 > **Scope**: `src/RingAggregatorHook.sol` + `src/RingUniBurner.sol` + `src/lib/FewV2Math.sol`. Uniswap `BaseHook` / `DeltaResolver` are inherited from pinned `lib/v4-periphery` and excluded as third-party dependency code.
 > **Build**: the **ownerless calldata-route** hook + 5 bps TokenJar fee pipeline
 > **Result**: **22 detector hits, 0 real findings**. All triaged below with reasoning.
-> **Run summary**: `42 contracts analyzed (98 detectors), 22 results found`.
+> **Run summary**: `41 contracts analyzed (98 detectors), 22 results found`.
 
 This document is **intended to be submitted as part of the package to external audit firms** (Spearbit / Cantina / Code4rena / OpenZeppelin). It shows the team has run the standard static analyzer and explained every output — saving auditor time.
 

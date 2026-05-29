@@ -5,7 +5,7 @@ Clean-history public audit mirror for Ring's Uniswap V4 aggregator hook.
 A Uniswap V4 **aggregator hook** that exposes Ring's FewV2 AMM liquidity (~$130M TVL across 7 chains) as native V4 pools. The Universal Router and V4 Quoter discover and use it as primitive `(tokenA, tokenB)` pools — under the hood every swap is routed through Ring's existing fewV2 AMM.
 
 > **Naming**: follows the Uniswap V4 ecosystem convention `<protocol>-v4-<purpose>-hook` (sibling to Ring's `ring-v4-periphery`).
-> **Status**: audit `main` branch, promoted from `ownerless-calldata-route` · frozen by tag `audit-ownerless-calldata-route-2026-05-25-r3` · 88/88 tests passing · V4Quoter empty-hookData fork tests passing · calldata-route red-team pass complete.
+> **Status**: audit helper-externalized branch, based on `audit-ownerless-calldata-route-2026-05-25-r3` · 88/88 tests passing · V4Quoter empty-hookData fork tests passing · calldata-route red-team pass complete.
 
 ---
 
@@ -69,7 +69,7 @@ Technical deep-dives (all in-repo, self-contained):
 
 ```
 src/
-├── RingAggregatorHook.sol        # main hook contract (~771 LOC, ownerless)
+├── RingAggregatorHook.sol        # main hook contract (~772 LOC, ownerless)
 ├── RingUniBurner.sol             # TokenJar push-source adapter (~157 LOC, owner-managed)
 ├── interfaces/
 │   ├── IFewWrappedToken.sol      # Ring fewToken wrap/unwrap
@@ -80,8 +80,10 @@ src/
 
 lib/
 └── v4-periphery/                 # pinned Uniswap v4-periphery v1.0.2 submodule
-    ├── src/utils/BaseHook.sol    # official hook callback base
-    └── src/base/DeltaResolver.sol # official take/settle helper
+    ├── src/utils/BaseHook.sol     # official hook callback base
+    ├── src/base/DeltaResolver.sol # official take/settle helper
+    ├── src/utils/HookMiner.sol    # official hook address miner used by scripts/tests
+    └── src/interfaces/external/IWETH9.sol # official WETH interface
 
 test/
 ├── unit/                         # 25 hermetic unit tests (10 FewV2Math + 15 RingUniBurner)
@@ -194,7 +196,7 @@ The deploy script runs post-deploy state assertions for all immutables (`feeReci
 | Item | State |
 |---|---|
 | Code complete | ✅ |
-| Slither static analysis | ✅ 27 hits reviewed on this branch; fixed-connector auto-routing and bounded calldata `calls-loop` findings are expected/by-design ([branch notes](docs/CALLDATA_ROUTE_SECURITY.md)) |
+| Slither static analysis | ✅ 22 hits reviewed on this branch; fixed-connector auto-routing and bounded calldata `calls-loop` findings are expected/by-design ([branch notes](docs/CALLDATA_ROUTE_SECURITY.md)) |
 | Tests | ✅ 88/88 (25 unit + 5 invariant + 58 fork) |
 | Adversarial tests | ✅ included in the fork suite (Cork-style direct-call, Bunni-style lying fewToken, force-fed ETH, reentrant sweep, degenerate pair, default-connector constructor checks, V4Quoter empty-hookData exact-in/out, calldata-route endpoint/fake-token/duplicate/missing-pair/slippage cases, etc.) |
 | Known-issues triage | ✅ [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) |

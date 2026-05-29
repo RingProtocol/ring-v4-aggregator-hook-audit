@@ -4,7 +4,7 @@
 > Audience: auditor, reviewer, protocol engineer
 > Companion docs: `DESIGN.md`, `AUDIT_SCOPE.md`, `KNOWN_ISSUES.md`, `OWNER_KEY_COMPROMISE.md`
 
-> Branch note: this rationale describes the `ownerless-calldata-route` audit
+> Branch note: this rationale describes the helper-externalized ownerless calldata-route audit
 > package: no admin model, empty-hookData default auto-routing, and bounded
 > calldata routes. Read `CALLDATA_ROUTE_SECURITY.md` for the route-specific
 > validation and red-team pass.

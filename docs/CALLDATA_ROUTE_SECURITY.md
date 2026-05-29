@@ -1,6 +1,6 @@
 # Calldata Route Security Notes
 
-> Branch: `ownerless-calldata-route`
+> Branch: `audit-r3-uniswap-periphery-helpers` (based on `audit-ownerless-calldata-route-2026-05-25-r3`)
 > Last updated: 2026-05-25
 > Scope: ownerless default auto-routing plus bounded multi-hop path support via `beforeSwap` `hookData`
 

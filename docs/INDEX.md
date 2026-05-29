@@ -6,7 +6,7 @@
 
 ## Quick orientation (30 seconds)
 
-You're looking at **Ring V4 Aggregator Hook** — a Uniswap V4 hook that exposes Ring's FewV2 AMM (~$130M TVL) as native V4 pools, with a 5 bps protocol fee that is pushed into Uniswap's canonical TokenJar; Uniswap's Firepit handles the downstream UNI burn. The audit `main` branch is promoted from `ownerless-calldata-route` and frozen by tag `audit-ownerless-calldata-route-2026-05-25-r3`; code is complete + tested (**88/88** passing: 25 unit + 5 invariant + 58 mainnet-fork), with V4Quoter empty-hookData coverage and a dedicated calldata-route red-team pass.
+You're looking at **Ring V4 Aggregator Hook** — a Uniswap V4 hook that exposes Ring's FewV2 AMM (~$130M TVL) as native V4 pools, with a 5 bps protocol fee that is pushed into Uniswap's canonical TokenJar; Uniswap's Firepit handles the downstream UNI burn. This helper-externalized audit branch is based on `audit-ownerless-calldata-route-2026-05-25-r3`; code is complete + tested (**88/88** passing: 25 unit + 5 invariant + 58 mainnet-fork), with V4Quoter empty-hookData coverage and a dedicated calldata-route red-team pass.
 
 **Branch note**: the historical `ownerless` branch remains the smaller direct-route package. This audit build extends it: empty `hookData` runs a built-in default router over direct + fixed connectors, while non-empty `hookData` enables ownerless calldata routes with chain-validated FewToken paths, fixed-connector intermediates, and hook-level slippage bounds. The pre-ownerless `main` branch is archived as `archive/pre-ownerless-main-2026-05-25`. See [`CALLDATA_ROUTE_SECURITY.md`](CALLDATA_ROUTE_SECURITY.md).
 
@@ -42,7 +42,7 @@ You're looking at **Ring V4 Aggregator Hook** — a Uniswap V4 hook that exposes
 
 | # | File | Why |
 |---|---|---|
-| 1 | [`../AUDIT_SCOPE.md`](../AUDIT_SCOPE.md) | **Start here.** In/out-of-scope, LOC, severity framework, 6 directed questions |
+| 1 | [`../AUDIT_SCOPE.md`](../AUDIT_SCOPE.md) | **Start here.** In/out-of-scope, nSLOC, severity framework, 8 directed questions |
 | 2 | [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) | What we already triaged — avoid re-reporting |
 | 3 | [`../README.md`](../README.md) | Repo orientation + status |
 | 4 | [`DESIGN.md`](DESIGN.md) | The "what" we're building |
@@ -76,7 +76,7 @@ Submit findings as GitHub issues on this repo, or in the agreed Slack/Discord ch
 | File | Audience | Description |
 |---|---|---|
 | `README.md` | Everyone | Repo orientation, branch model, build/deploy |
-| `AUDIT_SCOPE.md` | Auditor | In-scope vs out-of-scope, LOC, commit, severity framework, 6 directed questions |
+| `AUDIT_SCOPE.md` | Auditor | In-scope vs out-of-scope, nSLOC, commit, severity framework, 8 directed questions |
 | `KNOWN_ISSUES.md` | Auditor | M1/M2 mitigated+accepted, M3 fixed, low-risk internal findings, Slither triage on the ownerless calldata-route build |
 | `SECURITY.md` | Researcher | Responsible disclosure, scope, bounty intent, safe harbor |
 
@@ -90,7 +90,7 @@ Submit findings as GitHub issues on this repo, or in the agreed Slack/Discord ch
 | `UNI_BURN_NOTES.md` | Auditor, engineer — 5 bps + TokenJar/Firepit architecture |
 | `CALLDATA_ROUTE_SECURITY.md` | Auditor, engineer — calldata-route ABI, validation, red-team coverage, branch-specific Slither triage |
 | `SLITHER_TRIAGE.md` | Auditor — every detector hit triaged on the ownerless calldata-route build |
-| `TEST_COVERAGE.md` | Auditor — per-file lcov (Hook 97.13%, Burner 96.30%) |
+| `TEST_COVERAGE.md` | Auditor — per-file lcov (Hook 97.12%, Burner 96.30%) |
 | `OWNER_KEY_COMPROMISE.md` | CEO, auditor — residual-key threat model (hook is ownerless; covers the RingUniBurner owner) |
 | `DEPLOYMENT_FLOW.md` | CEO, ops team — current-state → routing-api roadmap (the *when/who*) |
 | `GO_LIVE_MECHANICS.md` | Everyone — how a user's swap reaches FewV2: shell pool, initialize ≠ add liquidity, hooklist vs allowlist (the *how/why*) |

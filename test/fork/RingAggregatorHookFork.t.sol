@@ -6,7 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -16,15 +16,16 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
+import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../../src/RingAggregatorHook.sol";
 import {RingUniBurner} from "../../src/RingUniBurner.sol";
 import {IFewFactory} from "../../src/interfaces/IFewFactory.sol";
 import {IFewWrappedToken} from "../../src/interfaces/IFewWrappedToken.sol";
-import {ISwapV2Pair, ISwapV2Factory, IWETH9} from "../../src/interfaces/IFewV2.sol";
+import {ISwapV2Pair, ISwapV2Factory} from "../../src/interfaces/IFewV2.sol";
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {ImmutableState} from "v4-periphery/src/base/ImmutableState.sol";
-import {HookMiner} from "../utils/HookMiner.sol";
 
 interface IV4Quoter {
     struct QuoteExactSingleParams {

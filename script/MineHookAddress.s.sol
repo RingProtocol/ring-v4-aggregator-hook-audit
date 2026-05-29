@@ -4,11 +4,12 @@ pragma solidity 0.8.26;
 import {Script, console2} from "forge-std/Script.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
+import {IWETH9} from "v4-periphery/src/interfaces/external/IWETH9.sol";
 
 import {RingAggregatorHook} from "../src/RingAggregatorHook.sol";
 import {IFewFactory} from "../src/interfaces/IFewFactory.sol";
-import {ISwapV2Factory, IWETH9} from "../src/interfaces/IFewV2.sol";
-import {HookMiner} from "../test/utils/HookMiner.sol";
+import {ISwapV2Factory} from "../src/interfaces/IFewV2.sol";
 
 /// @notice Mine a CREATE2 salt for RingAggregatorHook so its address encodes the
 ///         beforeInitialize | beforeAddLiquidity | beforeSwap | beforeSwapReturnsDelta flags

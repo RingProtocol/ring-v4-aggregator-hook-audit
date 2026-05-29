@@ -31,7 +31,7 @@ Already mostly done. Remaining items:
 | `OWNER_KEY_COMPROMISE.md` written | ✅ done | CTO/engineer | done |
 | Production monitoring checklist | ⬜ pending | CTO/engineer | 0.5 day |
 | `UNI_BURN_NOTES.md` written (feat) | ✅ done | engineer | done |
-| Code freeze on the `ownerless-calldata-route` build promoted to `main` | ✅ done | engineer | 30 min |
+| Code freeze on the helper-externalized ownerless calldata-route audit branch | ✅ done | engineer | 30 min |
 
 ### Build decision (settled)
 
@@ -71,8 +71,8 @@ When emailing firms, attach or link:
 
 ```
 1. Repo: github.com/RingProtocol/ring-v4-aggregator-hook-audit
-2. Branch: `main` (promoted from `ownerless-calldata-route`; old main archived as `archive/pre-ownerless-main-2026-05-25`)
-3. Audit tag: `audit-ownerless-calldata-route-2026-05-25-r3`
+2. Branch: `audit-r3-uniswap-periphery-helpers` (based on the frozen `audit-ownerless-calldata-route-2026-05-25-r3` tag)
+3. Base audit tag: `audit-ownerless-calldata-route-2026-05-25-r3`
 4. Build instructions: README.md "Build & test" section
 5. Docs to read (in order):
    - README.md
