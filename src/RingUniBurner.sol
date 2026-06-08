@@ -11,7 +11,7 @@ import {IFewFactory} from "./interfaces/external/IFewFactory.sol";
 import {IFewWrappedToken} from "./interfaces/external/IFewWrappedToken.sol";
 
 /// @title  RingUniBurner — Push-source adapter to Uniswap's TokenJar
-/// @notice Receives the 5 bps protocol fee (denominated in fewTokens) from
+/// @notice Receives the protocol fee (denominated in fewTokens) from
 ///         `RingAggregatorHook`, unwraps fewToken → underlying ERC20, and
 ///         forwards the underlying to Uniswap's canonical `TokenJar` fee
 ///         collector. From there, Uniswap's governance-controlled `Firepit`
@@ -27,20 +27,17 @@ import {IFewWrappedToken} from "./interfaces/external/IFewWrappedToken.sol";
 ///         TokenJar, Ring slots cleanly into the same review/audit framework
 ///         the Foundation applies to its own protocol versions.
 ///
-/// @dev    Canonical TokenJar deployments:
-///           Ethereum mainnet: 0xf38521f130fcCF29dB1961597bc5d2B60F995f85
-///           Also live on:     Arbitrum One, Base, OP Mainnet, Polygon,
-///                             Unichain, World Chain, Celo, Zora, Soneium,
-///                             X Layer.
-///         Pass the chain-appropriate address as `_tokenJar` at construction.
+/// @dev    Pass the chain-appropriate TokenJar address as `_tokenJar`.
+///         Canonical deployments are published in Uniswap's protocol-fees repo:
+///         https://github.com/Uniswap/protocol-fees
 ///
 /// @dev    Design principles:
 ///         1. NO REVERTING RECEIVE — passive ERC20 receive, no fallback. The
 ///            hook's `safeTransfer(thisContract, fee)` always succeeds.
-///         2. PERMISSIONLESS FLUSH — `flush(fewToken)` is callable by anyone.
-///            No slippage, no oracle dependency: we just unwrap (1:1) and
-///            push the underlying to TokenJar. Keeper bots can run it on
-///            a cron without worrying about MEV.
+///         2. PERMISSIONLESS FLUSH — while `flushPaused` is false,
+///            `flush(fewToken)` is callable by anyone. No slippage, no oracle
+///            dependency: we just unwrap (1:1) and push the underlying to
+///            TokenJar. Keeper bots can run it on a cron without MEV concerns.
 ///         3. NO SWAPS, NO UNI HANDLING — this contract never holds UNI,
 ///            never swaps. All UNI logic lives in Uniswap's Firepit on the
 ///            other side of TokenJar.
@@ -74,6 +71,7 @@ contract RingUniBurner is Ownable2Step, ReentrancyGuard {
     error UnknownFewToken(address fewToken);
     error UnwrapMismatch(uint256 expected, uint256 actual);
     error FlushPaused();
+    error EthForwardFailed();
 
     // ============ Events ============
 
@@ -134,17 +132,26 @@ contract RingUniBurner is Ownable2Step, ReentrancyGuard {
         emit FlushPausedSet(_paused);
     }
 
-    /// @notice Emergency withdraw of any ERC20 stuck in this contract.
+    /// @notice Emergency withdraw of any ERC20, or native ETH when `token == address(0)`, stuck in this contract.
     /// @dev    Use case: TokenJar address changes (Foundation migration) and
     ///         this contract is no longer addressable, OR a particular
     ///         fewToken's `unwrap` is broken. Owner rescues the asset and
     ///         routes it via an alternative path. **Not** intended for fee
     ///         diversion — owners are expected to honour the public commitment
     ///         that all skimmed fees ultimately reach Uniswap.
-    function emergencyWithdraw(address token, address to) external onlyOwner {
+    function emergencyWithdraw(address token, address to) external onlyOwner nonReentrant {
         if (to == address(0)) revert ZeroAddress();
-        uint256 amount = IERC20(token).balanceOf(address(this));
-        if (amount > 0) IERC20(token).safeTransfer(to, amount);
+        uint256 amount;
+        if (token == address(0)) {
+            amount = address(this).balance;
+            if (amount > 0) {
+                (bool ok,) = payable(to).call{value: amount}("");
+                if (!ok) revert EthForwardFailed();
+            }
+        } else {
+            amount = IERC20(token).balanceOf(address(this));
+            if (amount > 0) IERC20(token).safeTransfer(to, amount);
+        }
         emit EmergencyWithdrawn(token, to, amount);
     }
 

@@ -12,6 +12,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
@@ -81,6 +82,10 @@ contract HookNoAddressCheck is RingAggregatorHook {
         address _uniBurner
     ) RingAggregatorHook(_pm, _fewFactory, _fewV2Factory, _weth, _feeRecipient, _uniBurner) {}
     function validateHookAddress(BaseHook) internal pure override {}
+
+    function exposedExactInputAmount(int256 amountSpecified) external pure returns (uint256, int128) {
+        return _exactInputAmount(amountSpecified);
+    }
 }
 
 /// @notice Mainnet fork e2e for RingAggregatorHook (admin-less variant).
@@ -677,6 +682,23 @@ contract RingAggregatorHookForkTest is Test {
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 1e18, salt: bytes32(0)});
         vm.expectRevert(ImmutableState.NotPoolManager.selector);
         hook.beforeAddLiquidity(address(this), ethUsdcKey, p, "");
+    }
+
+    function test_attack_exactInputAmount_rejectsUnrepresentableDeltas() public requireFork {
+        HookNoAddressCheck harness = new HookNoAddressCheck(
+            IPoolManager(V4_PM),
+            IFewFactory(FEW_FACTORY),
+            ISwapV2Factory(RING_FACTORY),
+            IWETH9(WETH),
+            FEE_RECIPIENT,
+            address(burner)
+        );
+
+        vm.expectRevert(SafeCast.SafeCastOverflow.selector);
+        harness.exposedExactInputAmount(type(int256).min);
+
+        vm.expectRevert(SafeCast.SafeCastOverflow.selector);
+        harness.exposedExactInputAmount(int256(type(int128).min));
     }
 
     // ─── B. ETH abuse (verify sweep recovers + no fund loss) ───

@@ -231,6 +231,20 @@ contract RingUniBurnerTest is Test {
         burner.emergencyWithdraw(address(weth), address(0));
     }
 
+    function test_emergencyWithdraw_nativeEth_ownerOnly_transfersBalance() public {
+        vm.deal(address(burner), 1 ether);
+        uint256 ownerBefore = OWNER.balance;
+
+        vm.prank(KEEPER);
+        vm.expectRevert();
+        burner.emergencyWithdraw(address(0), OWNER);
+
+        vm.prank(OWNER);
+        burner.emergencyWithdraw(address(0), OWNER);
+        assertEq(OWNER.balance - ownerBefore, 1 ether);
+        assertEq(address(burner).balance, 0);
+    }
+
     // ─── Ownable hardening ─────────────────────────────────────────
 
     function test_renounceOwnership_reverts() public {

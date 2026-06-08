@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeCast as OZSafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
@@ -84,6 +85,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     /// @notice 5 bps of every swap's gross fewToken output is forwarded to `uniBurner`.
     uint24 public constant PROTOCOL_FEE_BPS = 5;
     uint256 private constant FEE_DENOM = 10_000;
+    uint256 private constant USER_FEE_BPS = FEE_DENOM - PROTOCOL_FEE_BPS;
 
     /// @notice Reserve sanity sentinel. V2 pairs lock `MINIMUM_LIQUIDITY = 1000 wei` at creation;
     ///         a pair at or below this level is fully drained — reject explicitly.
@@ -179,8 +181,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     // ============ DeltaResolver payment glue ============
     function _pay(
         Currency currency,
-        address,
-        /* payer */
+        address, /* payer */
         uint256 amount
     )
         internal
@@ -275,7 +276,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         SwapParams calldata params,
         DirectRoute memory route
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
-        uint256 amountIn = uint256(-params.amountSpecified);
+        (uint256 amountIn, int128 amountInDelta) = _exactInputAmount(params.amountSpecified);
 
         _take(inCurr, address(this), amountIn);
         uint256 fwInAmount = _wrap(inCurr, route.fewIn, amountIn);
@@ -290,8 +291,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
             key.toId(), sender, tx.origin, params.zeroForOne, params.amountSpecified, amountIn, amountOut, fwOutAmount
         );
 
-        BeforeSwapDelta swapDelta =
-            toBeforeSwapDelta((-params.amountSpecified).toInt128(), -amountOut.toInt256().toInt128());
+        BeforeSwapDelta swapDelta = toBeforeSwapDelta(amountInDelta, -amountOut.toInt256().toInt128());
         return (IHooks.beforeSwap.selector, swapDelta, 0);
     }
 
@@ -304,11 +304,11 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         SwapParams calldata params,
         DirectRoute memory route
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
+        int128 amountOutDelta = params.amountSpecified.toInt128();
         uint256 amountOut = uint256(params.amountSpecified);
 
         // Gross up so that after `_skimUniBurnFee` the user still receives `amountOut`.
-        uint256 fwOutGross =
-            (amountOut * FEE_DENOM + (FEE_DENOM - PROTOCOL_FEE_BPS) - 1) / (FEE_DENOM - PROTOCOL_FEE_BPS);
+        uint256 fwOutGross = (amountOut * FEE_DENOM + USER_FEE_BPS - 1) / USER_FEE_BPS;
         uint256 fwInRequired = _quoteAmountInForHop(route.pair, route.fewIn, route.fewOut, fwOutGross);
         uint256 amountIn = fwInRequired; // 1:1 wrap
 
@@ -327,9 +327,14 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
             key.toId(), sender, tx.origin, params.zeroForOne, params.amountSpecified, amountIn, amountOut, fwOutAmount
         );
 
-        BeforeSwapDelta swapDelta =
-            toBeforeSwapDelta((-params.amountSpecified).toInt128(), amountIn.toInt256().toInt128());
+        BeforeSwapDelta swapDelta = toBeforeSwapDelta(-amountOutDelta, amountIn.toInt256().toInt128());
         return (IHooks.beforeSwap.selector, swapDelta, 0);
+    }
+
+    function _exactInputAmount(int256 amountSpecified) internal pure returns (uint256 amountIn, int128 amountInDelta) {
+        int128 signedAmount = amountSpecified.toInt128();
+        amountIn = OZSafeCast.toUint256(-int256(signedAmount));
+        amountInDelta = amountIn.toInt128();
     }
 
     // ============ TokenJar fee ============
@@ -430,6 +435,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         if (token == address(0)) {
             amount = address(this).balance;
             if (amount > 0) {
+                // Native ETH can only be swept to the immutable feeRecipient.
                 (bool ok,) = payable(feeRecipient).call{value: amount}("");
                 if (!ok) revert EthForwardFailed();
             }
@@ -450,5 +456,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     }
 
     // ============ Native ETH receive ============
-    receive() external payable {}
+    receive() external payable {
+        // Accept native ETH returned by WETH withdraws or force-sent by external contracts.
+    }
 }

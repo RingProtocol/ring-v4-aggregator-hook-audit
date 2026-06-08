@@ -69,6 +69,11 @@ contract FewV2MathTest is Test {
         external_.getAmountOut(1, 0, 1e18);
     }
 
+    function test_getAmountOut_revertsOnZeroOutput() public {
+        vm.expectRevert(FewV2Math.InsufficientAmount.selector);
+        external_.getAmountOut(1, 1e30, 1001);
+    }
+
     function test_getAmountIn_revertsOnUnderwater() public {
         vm.expectRevert(FewV2Math.InsufficientLiquidity.selector);
         external_.getAmountIn(1e18, 1e18, 1e18);
