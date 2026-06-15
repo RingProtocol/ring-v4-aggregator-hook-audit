@@ -6,7 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -298,6 +298,52 @@ contract RingAggregatorHookForkTest is Test {
         assertEq(pair, FEWV2_PAIR, "pair == real fewV2 pair");
     }
 
+    function test_fork_registeredRouteResolves() public requireFork {
+        (address few0, address few1, address pair) = hook.registeredRouteFor(ethUsdcKey.toId());
+        assertEq(few0, FW_ETH, "registered few0 == fwETH");
+        assertEq(few1, FW_USDC, "registered few1 == fwUSDC");
+        assertEq(pair, FEWV2_PAIR, "registered pair == real fewV2 pair");
+        assertTrue(hook.fewV2PairRegistered(FEWV2_PAIR), "pair registered");
+        assertEq(PoolId.unwrap(hook.poolIdForFewV2Pair(FEWV2_PAIR)), PoolId.unwrap(ethUsdcKey.toId()));
+    }
+
+    function test_fork_pseudoTotalValueLocked_matchesFewV2Reserves() public requireFork {
+        (uint256 tvl0, uint256 tvl1) = hook.pseudoTotalValueLocked(ethUsdcKey.toId());
+        address pairToken0 = ISwapV2Pair(FEWV2_PAIR).token0();
+        (uint112 r0, uint112 r1,) = ISwapV2Pair(FEWV2_PAIR).getReserves();
+
+        uint256 expected0 = pairToken0 == FW_ETH ? uint256(r0) : uint256(r1);
+        uint256 expected1 = pairToken0 == FW_USDC ? uint256(r0) : uint256(r1);
+
+        assertEq(tvl0, expected0, "pseudo TVL token0");
+        assertEq(tvl1, expected1, "pseudo TVL token1");
+        assertGt(tvl0, MIN_PAIR_RESERVE, "nonzero token0 TVL");
+        assertGt(tvl1, MIN_PAIR_RESERVE, "nonzero token1 TVL");
+    }
+
+    function test_fork_aggregatorQuote_matchesDirectQuote_exactInput() public requireFork {
+        uint256 amountIn = 0.01 ether;
+        uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, amountIn));
+
+        uint256 quotedAmountOut = hook.quote(true, -int256(amountIn), ethUsdcKey.toId());
+
+        assertEq(quotedAmountOut, expectedNetOut, "aggregator quote exact-in");
+    }
+
+    function test_fork_aggregatorQuote_matchesDirectQuote_exactOutput() public requireFork {
+        uint256 amountOut = 10_000;
+        uint256 expectedIn = _bestDefaultExactOutput(FW_ETH, FW_USDC, _grossUpForFee(amountOut));
+
+        uint256 quotedAmountIn = hook.quote(true, int256(amountOut), ethUsdcKey.toId());
+
+        assertEq(quotedAmountIn, expectedIn, "aggregator quote exact-out");
+    }
+
+    function test_fork_aggregatorQuote_unknownPool_reverts() public requireFork {
+        vm.expectRevert(RingAggregatorHook.PoolDoesNotExist.selector);
+        hook.quote(true, -int256(1), PoolId.wrap(bytes32(uint256(1))));
+    }
+
     function test_fork_emptyHookData_directRoute_matchesDirectQuote_exactInput() public requireFork {
         uint256 amountIn = 0.01 ether;
         uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, amountIn));
@@ -412,6 +458,21 @@ contract RingAggregatorHookForkTest is Test {
         });
         vm.expectRevert();
         IPoolManager(V4_PM).initialize(wrapKey, INIT_PRICE);
+    }
+
+    function test_fork_revertsInitDuplicateFewV2Pair() public requireFork {
+        PoolKey memory duplicateKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(USDC),
+            fee: 500,
+            tickSpacing: 10,
+            hooks: IHooks(address(hook))
+        });
+
+        // BaseHook wraps hook reverts when called through PoolManager.initialize.
+        vm.expectRevert();
+        IPoolManager(V4_PM).initialize(duplicateKey, INIT_PRICE);
+        assertEq(PoolId.unwrap(hook.poolIdForFewV2Pair(FEWV2_PAIR)), PoolId.unwrap(ethUsdcKey.toId()));
     }
 
     // ─────────── e2e × 4: ExactIn/Out × zeroForOne/oneForZero ───────────
@@ -1026,6 +1087,26 @@ contract RingAggregatorHookForkTest is Test {
 
         vm.expectEmit(true, true, false, false, address(hook));
         emit RingAggregatorHook.UniFeeAccrued(ethUsdcKey.toId(), FW_USDC, 0);
+
+        SwapParams memory p = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(ethIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        PoolSwapTest.TestSettings memory s = PoolSwapTest.TestSettings(false, false);
+
+        vm.prank(USER);
+        swapRouter.swap{value: ethIn}(ethUsdcKey, p, s, "");
+    }
+
+    /// @notice Official aggregator-hook event is emitted for UniRoute/subgraph compatibility.
+    function test_fork_emitsHookSwapEvent_exactInput() public requireFork {
+        uint256 ethIn = 0.1 ether;
+        uint256 expectedNetOut = _netAfterFee(_bestDefaultExactInput(FW_ETH, FW_USDC, ethIn));
+        vm.deal(USER, ethIn);
+
+        vm.expectEmit(true, true, false, true, address(hook));
+        emit RingAggregatorHook.HookSwap(
+            ethUsdcKey.toId(), address(swapRouter), int256(ethIn), -int256(expectedNetOut), 500
+        );
 
         SwapParams memory p = SwapParams({
             zeroForOne: true, amountSpecified: -int256(ethIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1

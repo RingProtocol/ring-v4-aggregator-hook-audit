@@ -80,10 +80,14 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     error WrapMismatch(uint256 expected, uint256 actual);
     error UnwrapMismatch(uint256 expected, uint256 actual);
     error DegeneratePair(address pair);
+    error PoolDoesNotExist();
+    error PairAlreadyRegistered(PoolId existingPoolId);
 
     // ============ Constants ============
     /// @notice 5 bps of every swap's gross fewToken output is forwarded to `uniBurner`.
     uint24 public constant PROTOCOL_FEE_BPS = 5;
+    /// @notice Same fee in Uniswap hook/subgraph fee pips (1e6 denominator): 5 bps = 500 pips.
+    uint24 public constant PROTOCOL_FEE_PIPS = 500;
     uint256 private constant FEE_DENOM = 10_000;
     uint256 private constant USER_FEE_BPS = FEE_DENOM - PROTOCOL_FEE_BPS;
 
@@ -116,6 +120,18 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     /// @notice Tracks (token, fewToken) approvals — one-time max approval cache. Internal only.
     mapping(address => mapping(address => bool)) internal _approved;
 
+    /// @notice PoolId -> direct route registered during beforeInitialize. No admin can modify it later.
+    mapping(PoolId => RegisteredRoute) internal _registeredRoutes;
+    /// @notice External FewV2 pair -> canonical v4 poolId. Prevents duplicate shell pools from double-counting TVL.
+    mapping(address => PoolId) public poolIdForFewV2Pair;
+    mapping(address => bool) public fewV2PairRegistered;
+
+    struct RegisteredRoute {
+        address few0;
+        address few1;
+        address pair;
+    }
+
     struct DirectRoute {
         address fewIn;
         address fewOut;
@@ -135,6 +151,8 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     );
     event Sweep(address indexed token, address indexed to, uint256 amount, address indexed triggeredBy);
     event UniFeeAccrued(PoolId indexed poolId, address indexed fewToken, uint256 amount);
+    event AggregatorPoolRegistered(PoolId indexed poolId);
+    event HookSwap(PoolId indexed poolId, address indexed sender, int256 amount0, int256 amount1, uint24 swapFee);
 
     // ============ Constructor ============
     constructor(
@@ -191,7 +209,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     }
 
     // ============ beforeInitialize ============
-    function _beforeInitialize(address, PoolKey calldata key, uint160) internal view override returns (bytes4) {
+    function _beforeInitialize(address, PoolKey calldata key, uint160) internal override returns (bytes4) {
         if (key.fee == 0) revert InvalidPoolFee();
 
         address t0 = Currency.unwrap(key.currency0);
@@ -203,8 +221,17 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         // Endpoint FewTokens and their direct FewV2 pair must exist at init time.
         (address fewA, address fewB) = _defaultFewPair(t0, t1);
         if (fewA == address(0) || fewB == address(0)) revert NoFewV2Route();
-        if (fewV2Factory.getPair(fewA, fewB) == address(0)) revert NoFewV2Route();
+        address pair = fewV2Factory.getPair(fewA, fewB);
+        if (pair == address(0)) revert NoFewV2Route();
+        _validateFewV2Pair(pair, fewA, fewB);
 
+        PoolId poolId = key.toId();
+        if (fewV2PairRegistered[pair]) revert PairAlreadyRegistered(poolIdForFewV2Pair[pair]);
+        fewV2PairRegistered[pair] = true;
+        poolIdForFewV2Pair[pair] = poolId;
+        _registeredRoutes[poolId] = RegisteredRoute({few0: fewA, few1: fewB, pair: pair});
+
+        emit AggregatorPoolRegistered(poolId);
         return IHooks.beforeInitialize.selector;
     }
 
@@ -243,34 +270,29 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         Currency inCurr = params.zeroForOne ? key.currency0 : key.currency1;
         Currency outCurr = params.zeroForOne ? key.currency1 : key.currency0;
 
-        DirectRoute memory route = _resolveDirectRoute(key, params.zeroForOne);
+        PoolId poolId = key.toId();
+        DirectRoute memory route = _resolveDirectRoute(poolId, params.zeroForOne);
 
         bool isExactInput = params.amountSpecified < 0;
         if (isExactInput) {
-            return _swapExactInput(sender, key, inCurr, outCurr, params, route);
+            return _swapExactInput(sender, poolId, inCurr, outCurr, params, route);
         } else {
-            return _swapExactOutput(sender, key, inCurr, outCurr, params, route);
+            return _swapExactOutput(sender, poolId, inCurr, outCurr, params, route);
         }
     }
 
     // ============ Direct route resolution ============
-    function _resolveDirectRoute(PoolKey calldata key, bool zeroForOne)
-        internal
-        view
-        returns (DirectRoute memory route)
-    {
-        (address fewA, address fewB) = _defaultFewPair(Currency.unwrap(key.currency0), Currency.unwrap(key.currency1));
-        if (fewA == address(0) || fewB == address(0)) revert NoFewV2Route();
-
-        (route.fewIn, route.fewOut) = zeroForOne ? (fewA, fewB) : (fewB, fewA);
-        route.pair = fewV2Factory.getPair(route.fewIn, route.fewOut);
-        if (route.pair == address(0)) revert NoFewV2Route();
+    function _resolveDirectRoute(PoolId poolId, bool zeroForOne) internal view returns (DirectRoute memory route) {
+        RegisteredRoute storage registered = _registeredRoute(poolId);
+        (route.fewIn, route.fewOut) =
+            zeroForOne ? (registered.few0, registered.few1) : (registered.few1, registered.few0);
+        route.pair = registered.pair;
     }
 
     // ============ Exact-input ============
     function _swapExactInput(
         address sender,
-        PoolKey calldata key,
+        PoolId poolId,
         Currency inCurr,
         Currency outCurr,
         SwapParams calldata params,
@@ -282,14 +304,15 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         uint256 fwInAmount = _wrap(inCurr, route.fewIn, amountIn);
         uint256 fwOutAmount = _executeFewV2Hop(route.pair, route.fewIn, route.fewOut, fwInAmount);
 
-        uint256 fwUserOut = _skimUniBurnFee(key.toId(), route.fewOut, fwOutAmount);
+        uint256 fwUserOut = _skimUniBurnFee(poolId, route.fewOut, fwOutAmount);
 
         uint256 amountOut = _unwrap(route.fewOut, outCurr, fwUserOut);
         _settle(outCurr, address(this), amountOut);
 
         emit SwapAggregated(
-            key.toId(), sender, tx.origin, params.zeroForOne, params.amountSpecified, amountIn, amountOut, fwOutAmount
+            poolId, sender, tx.origin, params.zeroForOne, params.amountSpecified, amountIn, amountOut, fwOutAmount
         );
+        _emitHookSwap(poolId, sender, params.zeroForOne, amountIn, amountOut);
 
         BeforeSwapDelta swapDelta = toBeforeSwapDelta(amountInDelta, -amountOut.toInt256().toInt128());
         return (IHooks.beforeSwap.selector, swapDelta, 0);
@@ -298,14 +321,14 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     // ============ Exact-output ============
     function _swapExactOutput(
         address sender,
-        PoolKey calldata key,
+        PoolId poolId,
         Currency inCurr,
         Currency outCurr,
         SwapParams calldata params,
         DirectRoute memory route
     ) internal returns (bytes4, BeforeSwapDelta, uint24) {
         int128 amountOutDelta = params.amountSpecified.toInt128();
-        uint256 amountOut = uint256(params.amountSpecified);
+        uint256 amountOut = OZSafeCast.toUint256(int256(amountOutDelta));
 
         // Gross up so that after `_skimUniBurnFee` the user still receives `amountOut`.
         uint256 fwOutGross = (amountOut * FEE_DENOM + USER_FEE_BPS - 1) / USER_FEE_BPS;
@@ -316,7 +339,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         uint256 fwInAmount = _wrap(inCurr, route.fewIn, amountIn);
         uint256 fwOutAmount = _executeFewV2Hop(route.pair, route.fewIn, route.fewOut, fwInAmount);
 
-        uint256 fwUserOut = _skimUniBurnFee(key.toId(), route.fewOut, fwOutAmount);
+        uint256 fwUserOut = _skimUniBurnFee(poolId, route.fewOut, fwOutAmount);
 
         uint256 actualOut = _unwrap(route.fewOut, outCurr, fwUserOut);
         if (actualOut < amountOut) revert ExactOutputUnderfilled(actualOut, amountOut);
@@ -324,8 +347,9 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         _settle(outCurr, address(this), amountOut);
 
         emit SwapAggregated(
-            key.toId(), sender, tx.origin, params.zeroForOne, params.amountSpecified, amountIn, amountOut, fwOutAmount
+            poolId, sender, tx.origin, params.zeroForOne, params.amountSpecified, amountIn, amountOut, fwOutAmount
         );
+        _emitHookSwap(poolId, sender, params.zeroForOne, amountIn, amountOut);
 
         BeforeSwapDelta swapDelta = toBeforeSwapDelta(-amountOutDelta, amountIn.toInt256().toInt128());
         return (IHooks.beforeSwap.selector, swapDelta, 0);
@@ -335,6 +359,15 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         int128 signedAmount = amountSpecified.toInt128();
         amountIn = OZSafeCast.toUint256(-int256(signedAmount));
         amountInDelta = amountIn.toInt128();
+    }
+
+    function _emitHookSwap(PoolId poolId, address sender, bool zeroForOne, uint256 amountIn, uint256 amountOut)
+        internal
+    {
+        int256 signedIn = amountIn.toInt256();
+        int256 signedOut = amountOut.toInt256();
+        (int256 amount0, int256 amount1) = zeroForOne ? (signedIn, -signedOut) : (-signedOut, signedIn);
+        emit HookSwap(poolId, sender, amount0, amount1, PROTOCOL_FEE_PIPS);
     }
 
     // ============ TokenJar fee ============
@@ -426,6 +459,14 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         if (reserveIn <= MIN_PAIR_RESERVE || reserveOut <= MIN_PAIR_RESERVE) revert DegeneratePair(pair);
     }
 
+    function _validateFewV2Pair(address pair, address few0, address few1) internal view {
+        address pairToken0 = ISwapV2Pair(pair).token0();
+        address pairToken1 = ISwapV2Pair(pair).token1();
+        if (!((pairToken0 == few0 && pairToken1 == few1) || (pairToken0 == few1 && pairToken1 == few0))) {
+            revert TokenMismatch(pair);
+        }
+    }
+
     // ============ Permissionless sweep ============
 
     /// @notice Sweep `token` balance to the immutable `feeRecipient`. Anyone may call.
@@ -447,12 +488,77 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     }
 
     // ============ Views ============
+    /// @notice Quotes the registered direct FewV2 route using the Uniswap aggregator-hook ABI.
+    /// @dev Negative amountSpecified = exact-input; positive amountSpecified = exact-output.
+    function quote(bool zeroForOne, int256 amountSpecified, PoolId poolId)
+        external
+        view
+        returns (uint256 amountUnspecified)
+    {
+        DirectRoute memory route = _resolveDirectRoute(poolId, zeroForOne);
+        if (amountSpecified < 0) {
+            (uint256 amountIn,) = _exactInputAmount(amountSpecified);
+            uint256 exactInGrossOut = _executeQuoteExactInput(route.pair, route.fewIn, route.fewOut, amountIn);
+            return _netAfterUniBurnFee(exactInGrossOut);
+        }
+
+        int128 amountOutDelta = amountSpecified.toInt128();
+        uint256 amountOut = OZSafeCast.toUint256(int256(amountOutDelta));
+        uint256 exactOutGrossOut = _grossUpForUniBurnFee(amountOut);
+        amountUnspecified = _quoteAmountInForHop(route.pair, route.fewIn, route.fewOut, exactOutGrossOut);
+    }
+
+    /// @notice Reports FewV2 reserves in the v4 pool token order for UniRoute external-liquidity discovery.
+    function pseudoTotalValueLocked(PoolId poolId) external view returns (uint256 amount0, uint256 amount1) {
+        RegisteredRoute storage route = _registeredRoute(poolId);
+        address pairToken0 = ISwapV2Pair(route.pair).token0();
+        address pairToken1 = ISwapV2Pair(route.pair).token1();
+        (uint112 r0, uint112 r1,) = ISwapV2Pair(route.pair).getReserves();
+
+        if (route.few0 == pairToken0 && route.few1 == pairToken1) {
+            (amount0, amount1) = (uint256(r0), uint256(r1));
+        } else if (route.few0 == pairToken1 && route.few1 == pairToken0) {
+            (amount0, amount1) = (uint256(r1), uint256(r0));
+        } else {
+            revert TokenMismatch(route.pair);
+        }
+
+        if (amount0 <= MIN_PAIR_RESERVE || amount1 <= MIN_PAIR_RESERVE) return (0, 0);
+    }
+
+    function registeredRouteFor(PoolId poolId) external view returns (address few0, address few1, address pair) {
+        RegisteredRoute storage route = _registeredRoute(poolId);
+        return (route.few0, route.few1, route.pair);
+    }
+
     /// @notice The direct 1-hop FewV2 route derived from fewFactory for a pool.
     function defaultRouteFor(PoolKey calldata key) external view returns (address fewA, address fewB, address pair) {
         (fewA, fewB) = _defaultFewPair(Currency.unwrap(key.currency0), Currency.unwrap(key.currency1));
         if (fewA != address(0) && fewB != address(0)) {
             pair = fewV2Factory.getPair(fewA, fewB);
         }
+    }
+
+    function _registeredRoute(PoolId poolId) internal view returns (RegisteredRoute storage route) {
+        route = _registeredRoutes[poolId];
+        if (route.pair == address(0)) revert PoolDoesNotExist();
+    }
+
+    function _executeQuoteExactInput(address pair, address tokenIn, address tokenOut, uint256 amountIn)
+        internal
+        view
+        returns (uint256 amountOut)
+    {
+        (uint256 reserveIn, uint256 reserveOut,) = _hopState(pair, tokenIn, tokenOut);
+        amountOut = FewV2Math.getAmountOut(amountIn, reserveIn, reserveOut);
+    }
+
+    function _netAfterUniBurnFee(uint256 grossOut) internal pure returns (uint256) {
+        return grossOut - ((grossOut * PROTOCOL_FEE_BPS) / FEE_DENOM);
+    }
+
+    function _grossUpForUniBurnFee(uint256 userOut) internal pure returns (uint256) {
+        return (userOut * FEE_DENOM + USER_FEE_BPS - 1) / USER_FEE_BPS;
     }
 
     // ============ Native ETH receive ============
