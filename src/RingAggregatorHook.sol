@@ -69,7 +69,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ============ Errors ============
-    error InvalidPoolFee();
+    error InvalidPoolKey();
     error UseFewTokenHookForWrapPairs();
     error NoFewV2Route();
     error LiquidityNotAllowed();
@@ -88,6 +88,9 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     uint24 public constant PROTOCOL_FEE_BPS = 5;
     /// @notice Same fee in Uniswap hook/subgraph fee pips (1e6 denominator): 5 bps = 500 pips.
     uint24 public constant PROTOCOL_FEE_PIPS = 500;
+    /// @notice Canonical v4 shell-pool key for UniRoute discovery: 0.05% fee tier, 10 tick spacing.
+    uint24 public constant CANONICAL_POOL_FEE = 500;
+    int24 public constant CANONICAL_TICK_SPACING = 10;
     uint256 private constant FEE_DENOM = 10_000;
     uint256 private constant USER_FEE_BPS = FEE_DENOM - PROTOCOL_FEE_BPS;
 
@@ -210,7 +213,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
 
     // ============ beforeInitialize ============
     function _beforeInitialize(address, PoolKey calldata key, uint160) internal override returns (bytes4) {
-        if (key.fee == 0) revert InvalidPoolFee();
+        if (key.fee != CANONICAL_POOL_FEE || key.tickSpacing != CANONICAL_TICK_SPACING) revert InvalidPoolKey();
 
         address t0 = Currency.unwrap(key.currency0);
         address t1 = Currency.unwrap(key.currency1);

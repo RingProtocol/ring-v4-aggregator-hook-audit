@@ -48,9 +48,9 @@ contract DeployMainnet is Script {
     ///      beforeSwapReturnDelta=true — it's only required so PoolManager.initialize doesn't reject.
     uint160 constant INIT_PRICE = 79228162514264337593543950336;
 
-    /// @dev 30 bps pool fee — see AGGREGATOR_HOOK_DESIGN.md §6.4 / §10.2 for justification.
-    uint24 constant POOL_FEE = 3000;
-    int24 constant TICK_SPACING = 60;
+    /// @dev Canonical 0.05% v4 shell pool used for UniRoute aggregator-hook discovery.
+    uint24 constant POOL_FEE = 500;
+    int24 constant TICK_SPACING = 10;
 
     function run() external {
         bytes32 salt = vm.envBytes32("HOOK_SALT");
@@ -137,8 +137,8 @@ contract DeployMainnet is Script {
             console2.log("=== ETH/USDC pool initialized ===");
             console2.log("currency0:    address(0) (native ETH)");
             console2.log("currency1:    USDC", usdc);
-            console2.log("fee:          3000 (30bps)");
-            console2.log("tickSpacing:  60");
+            console2.log("fee:          500 (5bps)");
+            console2.log("tickSpacing:  10");
             console2.log("hooks:        ", hookAddr);
         } else {
             console2.log("(SKIP_INIT_POOL=true; pool initialization skipped)");

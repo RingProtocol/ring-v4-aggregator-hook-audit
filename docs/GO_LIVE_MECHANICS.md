@@ -112,8 +112,8 @@ IPoolManager(V4_PM).initialize(
     PoolKey({
         currency0: Currency.wrap(address(0)),   // ETH
         currency1: Currency.wrap(USDC),
-        fee: 3000,                               // 30 bps — a routing LABEL, not a real charge
-        tickSpacing: 60,
+        fee: 500,                                // 0.05% canonical UniRoute shell-pool label
+        tickSpacing: 10,
         hooks: IHooks(<our hook address>)
     }),
     INIT_PRICE

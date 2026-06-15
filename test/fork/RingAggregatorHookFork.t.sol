@@ -117,6 +117,8 @@ contract RingAggregatorHookForkTest is Test {
     uint256 constant PROTOCOL_FEE_BPS = 5;
     uint256 constant MIN_PAIR_RESERVE = 1000;
     uint160 constant INIT_PRICE = 79228162514264337593543950336;
+    uint24 constant CANONICAL_POOL_FEE = 500;
+    int24 constant CANONICAL_TICK_SPACING = 10;
 
     address constant FEE_RECIPIENT = address(0xFEE);
     address constant USER = address(0xBEEF);
@@ -178,8 +180,8 @@ contract RingAggregatorHookForkTest is Test {
         ethUsdcKey = PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(USDC),
-            fee: 3000,
-            tickSpacing: 60,
+            fee: CANONICAL_POOL_FEE,
+            tickSpacing: CANONICAL_TICK_SPACING,
             hooks: IHooks(address(hook))
         });
 
@@ -424,8 +426,8 @@ contract RingAggregatorHookForkTest is Test {
         PoolKey memory ethUsdsKey = PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(USDS),
-            fee: 3000,
-            tickSpacing: 60,
+            fee: CANONICAL_POOL_FEE,
+            tickSpacing: CANONICAL_TICK_SPACING,
             hooks: IHooks(address(hook))
         });
 
@@ -435,11 +437,11 @@ contract RingAggregatorHookForkTest is Test {
 
     // ─────────── Initialize is rejected for invalid configs ───────────
 
-    function test_fork_revertsInitOnZeroFee() public requireFork {
+    function test_fork_revertsInitOnNonCanonicalFee() public requireFork {
         PoolKey memory badKey = PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(USDC),
-            fee: 0,
+            fee: 3000,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
@@ -452,8 +454,8 @@ contract RingAggregatorHookForkTest is Test {
         PoolKey memory wrapKey = PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(FW_ETH),
-            fee: 3000,
-            tickSpacing: 60,
+            fee: CANONICAL_POOL_FEE,
+            tickSpacing: CANONICAL_TICK_SPACING,
             hooks: IHooks(address(hook))
         });
         vm.expectRevert();
@@ -462,10 +464,10 @@ contract RingAggregatorHookForkTest is Test {
 
     function test_fork_revertsInitDuplicateFewV2Pair() public requireFork {
         PoolKey memory duplicateKey = PoolKey({
-            currency0: Currency.wrap(address(0)),
-            currency1: Currency.wrap(USDC),
-            fee: 500,
-            tickSpacing: 10,
+            currency0: Currency.wrap(USDC),
+            currency1: Currency.wrap(WETH),
+            fee: CANONICAL_POOL_FEE,
+            tickSpacing: CANONICAL_TICK_SPACING,
             hooks: IHooks(address(hook))
         });
 
@@ -717,6 +719,8 @@ contract RingAggregatorHookForkTest is Test {
 
     function test_fork_protocolFeeBpsIsConstant() public requireFork {
         assertEq(uint256(hook.PROTOCOL_FEE_BPS()), 5);
+        assertEq(uint256(hook.CANONICAL_POOL_FEE()), CANONICAL_POOL_FEE);
+        assertEq(int256(hook.CANONICAL_TICK_SPACING()), int256(CANONICAL_TICK_SPACING));
     }
 
     // ════════════════════════════════════════════════════════════════════════
