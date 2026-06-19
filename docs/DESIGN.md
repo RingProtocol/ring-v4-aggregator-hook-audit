@@ -1,8 +1,8 @@
 # Ring V4 Aggregator Hook - Ownerless Direct-Only Design
 
-> Last updated: 2026-05-29
-> Audit target: `audit-r3-direct-only-sor`
-> Status: implementation complete; 73/73 tests passing; Slither triaged; coverage regenerated
+> Last updated: 2026-06-19
+> Deployment target: `audit-router-compat-aggregator-interface`
+> Status: implementation complete; 83/83 tests passing; Slither triaged; coverage regenerated
 
 ---
 
@@ -98,10 +98,11 @@ Production requirement: transfer `RingUniBurner.owner` to a Gnosis Safe with a t
 
 `_beforeInitialize` requires:
 
-1. `key.fee != 0`
+1. canonical shell pool parameters: `key.fee == 500` and `key.tickSpacing == 10`
 2. The pool is not an underlying/FewToken wrap pair
 3. Both endpoints have canonical FewTokens through `fewFactory`
 4. The direct FewV2 pair exists through `fewV2Factory`
+5. The FewV2 pair has not already been registered by another v4 shell pool
 
 If any condition fails, the pool cannot be initialized under this hook.
 
@@ -128,6 +129,16 @@ tokenA -> fewA -> pair(fewA/fewB) -> fewB -> tokenB
 `hookData` is ignored for routing. This keeps Universal Router / V4Quoter integrations simple and avoids accidental reverts if a caller passes non-empty hookData.
 
 Multi-hop price improvement is delegated to Uniswap routing. If `A -> X -> B` is best, the router can compose it as two v4 pool hops, and each hop invokes the hook once.
+
+For UniRoute aggregator-hook discovery, initialization stores `poolId -> direct route`,
+emits `AggregatorPoolRegistered(poolId)`, and exposes:
+
+- `quote(bool zeroForOne, int256 amountSpecified, PoolId poolId)`
+- `pseudoTotalValueLocked(PoolId poolId)`
+- `HookSwap(poolId, sender, amount0, amount1, swapFee)`
+
+These functions/events are compatibility surface only. They do not introduce an admin
+route setter, connector engine, or user-supplied path.
 
 ---
 
@@ -237,11 +248,11 @@ Highest-value review targets:
 ## 13. Audit Readiness
 
 - Build: green
-- Tests: 73/73 passing
-- Source coverage: 182/185 lines = 98.38%
-- Slither: 7 findings triaged as false-positive / by-design; 0 real issues
-- Ring-written production review surface: 395 nSLOC
+- Tests: 83/83 passing
+- Source coverage: 241/247 lines = 97.57%; 37/37 functions = 100.00%
+- Slither: 8 findings triaged as false-positive / by-design; 0 real issues
+- Ring-written production review surface: 502 nSLOC
 - Hook governance surface: none
 - Residual privileged key: only `RingUniBurner.owner`, documented separately
 
-The code is ready for external audit from a scope-definition perspective.
+The code is ready for final deployment review from a scope-definition perspective.

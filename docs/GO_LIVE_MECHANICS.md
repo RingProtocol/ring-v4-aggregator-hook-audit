@@ -16,9 +16,10 @@ We do ONE on-chain action per pair:  PoolManager.initialize(poolKey)   ← creat
 We do NOT add liquidity.             (the hook blocks it on purpose)
 Users do NOTHING new.                They swap on app.uniswap.org as always.
 
-Once the hook is on Uniswap's routing-api allowlist and classic routing considers this
-hook address, the router can quote our pool with empty `hookData`. If FewV2's direct
-or fixed-connector quote is best, the user's swap silently executes against FewV2.
+Once the hook is accepted through Uniswap Labs' hook routing allowlist / UniRoute
+review path and classic routing considers this hook address, the router can quote
+our pool with empty `hookData`. If FewV2's direct quote is best, the user's swap
+silently executes against FewV2.
 The user never sees "Ring", never picks a hook, never adds liquidity.
 ```
 
@@ -92,7 +93,7 @@ return (IHooks.beforeSwap.selector, swapDelta, 0);
 ```
 
 PoolManager settles on that delta and never asks where the liquidity came from.
-Internally the hook did: `tokenIn → fewToken.wrap → direct-or-connector FewV2 route → fewToken.unwrap → tokenOut`.
+Internally the hook did: `tokenIn → fewToken.wrap → direct FewV2 route → fewToken.unwrap → tokenOut`.
 
 ---
 
@@ -146,7 +147,7 @@ WE (one-time setup, via deploy script):
   1. deploy hook + RingUniBurner
   2. PoolManager.initialize(poolKey)  for each pair      ← the only required on-chain action
   3. submit to Uniswap hooklist                          ← registry listing
-  4. apply to routing-api allowlist                      ← the gate that turns on traffic
+  4. submit Labs hook routing allowlist form / UniRoute review materials
 
 USERS (nothing new — exactly what they already do):
   • open app.uniswap.org
@@ -160,19 +161,19 @@ was involved. It is completely transparent.
 
 ---
 
-## 5. Two lists, do not confuse them: hooklist ≠ routing-api allowlist
+## 5. Two lists, do not confuse them: hooklist ≠ Labs routing allowlist
 
 This is the most common misunderstanding. Getting into the hooklist does **not** get you traffic.
 
-| | `Uniswap/hooklist` | `Uniswap/routing-api` allowlist |
+| | `Uniswap/hooklist` | Labs routing allowlist / UniRoute review |
 |---|---|---|
-| What it is | Public registry of all known V4 hooks ("yellow pages") | The per-chain list of hooks the router is *allowed to route through* |
+| What it is | Public registry of all known V4 hooks ("yellow pages") | Labs review/config path for hooks the router may route through |
 | Effect | Discoverability / catalog only | **Turns on actual user traffic** |
-| How to get in | Open an issue (chain + hook address); their Claude Code workflow analyzes source, opens a PR, maintainer merges | Submit the allowlist PR / form with audit report + metrics |
+| How to get in | Open an issue / PR with chain + hook address | Submit the Labs allowlist form with audit report, verified source, initialized pool, and smoke-swap evidence |
 | Audit required? | No (optional metadata) | **De facto yes** — the router won't allowlist an unaudited hook that front-end users implicitly trust |
 | Traffic if listed here only? | **None** | **Yes** |
 
-So the order is: deploy → initialize → hooklist (registry) → **routing-api allowlist (the real gate)**.
+So the order is: deploy → initialize → hooklist (registry) → **Labs routing allowlist / UniRoute review (the real gate)**.
 
 ---
 
@@ -180,9 +181,9 @@ So the order is: deploy → initialize → hooklist (registry) → **routing-api
 
 ```
 1. user opens app.uniswap.org, enters ETH → USDC
-2. routing-api queries every available pool (V2, V3, V4, V4+hooks)
+2. Uniswap classic routing / UniRoute considers available pools (V2, V3, V4, V4+hooks)
 3. our hook pool is in the candidate set (because it's allowlisted)
-4. routing-api / V4Quoter calls our hook's quote with empty `hookData`
+4. routing / quoter path can call our hook with empty `hookData`; UniRoute-compatible paths can also use `quote` and `pseudoTotalValueLocked`
    → hook computes the direct FewV2 pair output
 5. if our quote is best (whole route OR one leg of a split), the swap is routed to us
 6. user's swap executes: tokenIn → wrap → FewV2 swap → unwrap → tokenOut
@@ -191,7 +192,7 @@ So the order is: deploy → initialize → hooklist (registry) → **routing-api
 ```
 
 ```
-WE do:    deploy hook → initialize pools → submit hooklist → apply allowlist / routing merge
+WE do:    deploy hook → initialize pools → submit hooklist → submit Labs routing allowlist
                                                                     ↓
                                                             allowlist approved
 USER (auto):  app.uniswap.org → router finds our pool → quote best? → swap → FewV2
@@ -233,6 +234,6 @@ pool.
 ## One-sentence summary
 
 We run `initialize` once per pair (no liquidity, ever), get the exact hook address into
-Uniswap's hook/routing allowlist path, and from then on every Uniswap user can
+Uniswap's hooklist and Labs routing allowlist path, and from then on every Uniswap user can
 automatically trade against FewV2 whenever its empty-hookData quote is best — with zero
 action and zero awareness on their part.

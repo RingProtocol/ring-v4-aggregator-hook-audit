@@ -1,6 +1,6 @@
 # Ring V4 Aggregator Hook - Direct-Only Rationale
 
-> Last updated: 2026-05-29
+> Last updated: 2026-06-19
 > Audience: auditor, reviewer, protocol engineer
 
 ---
@@ -171,7 +171,7 @@ The burner keeps a limited owner role for pause / emergency rescue of fee balanc
 | `RingAggregatorHookInvariants.t.sol` | Fee accounting, gross-up, reserve sentinel |
 | `RingAggregatorHookFork.t.sol` | Real mainnet factories, FewTokens, FewV2 pairs, V4Quoter, TokenJar |
 
-Current result: 73/73 tests passing.
+Current result: 83/83 tests passing.
 
 ---
 
@@ -189,11 +189,12 @@ Current result: 73/73 tests passing.
 
 This branch is the smaller audit target:
 
-- 395 nSLOC of Ring-written production logic
+- 502 nSLOC of Ring-written production logic
 - no hook owner
 - no in-hook connector router
 - no calldata path engine
 - no user-supplied pair addresses
+- narrow UniRoute compatibility layer for discovery/quoting
 - one immutable fee
 - one immutable fee sink
 - one residual owner isolated to the fee adapter

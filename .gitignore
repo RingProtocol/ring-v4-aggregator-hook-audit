@@ -38,3 +38,9 @@ Thumbs.db
 
 # ─── Logs ───
 *.log
+
+# ─── Local audit working files ───
+docs/*draft*.pdf
+docs/.gen_*
+docs/*.tsv
+docs/internal/

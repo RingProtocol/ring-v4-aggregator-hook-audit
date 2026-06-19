@@ -1,11 +1,11 @@
 # Slither Triage Report
 
 > **Tool**: Slither 0.11.5
-> **Date**: 2026-05-29
-> **Branch**: `audit-r3-direct-only-sor`
+> **Date**: 2026-06-19
+> **Branch**: `audit-router-compat-aggregator-interface`
 > **Scope**: `src/RingAggregatorHook.sol`, `src/RingUniBurner.sol`, `src/lib/FewV2Math.sol`
-> **Result**: 7 findings, 0 real issues
-> **Run summary**: `41 contracts analyzed (98 detectors), 7 result(s) found`
+> **Result**: 8 findings, 0 real issues
+> **Run summary**: `42 contracts analyzed (98 detectors), 8 result(s) found`
 
 ---
 
@@ -35,9 +35,10 @@ Excluded detectors:
 | `incorrect-equality` | `RingUniBurner.flush` zero-balance no-op | By design |
 | `reentrancy-no-eth` | `RingAggregatorHook._ensureApproval` approval cache write | False positive |
 | `unused-return` | `RingAggregatorHook._hopState` ignores V2 timestamp | By design |
+| `unused-return` | `RingAggregatorHook.pseudoTotalValueLocked` ignores V2 timestamp | By design |
 | `reentrancy-events` | `RingAggregatorHook._skimUniBurnFee` event after transfer | False positive |
-| `reentrancy-events` | `RingUniBurner.emergencyWithdraw` event after transfer | False positive |
 | `low-level-calls` | `RingAggregatorHook.sweep` native ETH call | By design |
+| `low-level-calls` | `RingUniBurner.emergencyWithdraw` native ETH call | By design |
 
 The prior `calls-loop` category is gone in this branch because connector routing and calldata multi-hop execution were removed.
 
@@ -57,16 +58,20 @@ The prior `calls-loop` category is gone in this branch because connector routing
 
 `getReserves()` returns `(reserve0, reserve1, blockTimestampLast)`. The hook only needs reserves, so the timestamp is intentionally ignored.
 
+The same applies to `pseudoTotalValueLocked`: UniRoute needs a reserve-backed external-liquidity proxy, not the pair timestamp.
+
 ### Event-after-transfer warnings
 
 The events are emitted after the corresponding transfer. The functions are `nonReentrant`, and no security decision depends on event ordering.
 
-### Native ETH sweep
+### Native ETH sweep / rescue
 
 The hook uses `call` to transfer ETH to the immutable `feeRecipient`, which is the standard way to avoid fixed-gas-stipend issues. `sweep` is `nonReentrant`, and the recipient cannot be changed.
+
+`RingUniBurner.emergencyWithdraw` also uses `call` for native ETH rescue. It is owner-only, `nonReentrant`, and scoped to balances already held by the burner.
 
 ---
 
 ## Summary
 
-All 7 outputs are false-positive or by-design. No Slither finding requires a code change.
+All 8 outputs are false-positive or by-design. No Slither finding requires a code change.

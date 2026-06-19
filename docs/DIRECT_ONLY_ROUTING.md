@@ -1,6 +1,6 @@
 # Direct-Only Routing Model
 
-> Branch: `audit-r3-direct-only-sor`
+> Branch: `audit-router-compat-aggregator-interface`
 > Scope: ownerless direct FewV2 pair routing inside the hook
 
 ---
@@ -18,6 +18,11 @@ pair = fewV2Factory.getPair(fewA, fewB)
 ```
 
 The swap then uses exactly that direct FewV2 pair.
+
+The final deployment branch also registers one canonical v4 shell pool for each
+FewV2 pair and exposes UniRoute-facing read/event helpers (`quote`,
+`pseudoTotalValueLocked`, `AggregatorPoolRegistered`, `HookSwap`). These helpers
+do not add an in-hook route engine.
 
 If a better price exists through an intermediate token, for example `A -> X -> B`, that route should be composed by Uniswap routing as two v4 pool hops:
 
@@ -117,4 +122,4 @@ The fork suite covers:
 - pair mismatch and degenerate reserve failures
 - 5 bps fee skim and TokenJar forwarding
 
-Current result: 73/73 tests passing.
+Current result: 83/83 tests passing.

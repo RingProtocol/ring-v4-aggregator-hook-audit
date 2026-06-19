@@ -1,7 +1,7 @@
 # Deployment Flow
 
-> Branch: `audit-r3-direct-only-sor`
-> Purpose: audit-to-mainnet checklist for the direct-only ownerless hook
+> Branch: `audit-router-compat-aggregator-interface`
+> Purpose: mainnet deployment checklist for the direct-only ownerless hook with UniRoute aggregator compatibility
 
 ---
 
@@ -10,14 +10,15 @@
 | Item | Status |
 |---|---|
 | Direct-only hook implementation | Done |
+| UniRoute aggregator compatibility | Done |
 | RingUniBurner fee adapter | Done |
-| Tests | 73/73 passing |
-| Slither | 7 findings triaged, 0 real issues |
-| Audit scope | 395 nSLOC Ring-written production code |
-| External audit | Pending |
+| Tests | 83/83 passing |
+| Slither | 8 findings triaged, 0 real issues |
+| Audit scope | 502 nSLOC Ring-written production code |
+| External audit | ABDK public report v1.1 included |
 | Burner owner multisig/timelock | Pending |
-| Mainnet deployment | Pending audit |
-| Uniswap hooklist / routing allowlist | Pending deployment and audit report |
+| Mainnet deployment | Ready after final address review |
+| Uniswap hooklist / Labs routing allowlist | Re-submit after new router-compatible deployment |
 
 ---
 
@@ -27,11 +28,12 @@ Send auditors:
 
 ```text
 Repo: github.com/RingProtocol/ring-v4-aggregator-hook-audit
-Branch: audit-r3-direct-only-sor
+Branch: audit-router-compat-aggregator-interface
 Build: forge build
 Hermetic tests: forge test --offline --no-match-path "test/fork/*"
 Full tests: ETH_RPC_URL=<mainnet RPC> forge test
 Primary scope: src/RingAggregatorHook.sol, src/RingUniBurner.sol, src/lib/FewV2Math.sol
+Audit report: docs/ABDK_Ring_Aggregator_Hook_Audit_Report_v1.1.pdf
 ```
 
 Reading order:
@@ -67,7 +69,7 @@ Do not deploy meaningful mainnet volume before the final report is complete and 
 
 | Requirement | Reason |
 |---|---|
-| Public audit report | Needed for router / hooklist reviewers and public trust |
+| Public audit report | Included for hooklist / routing reviewers and public trust |
 | All Critical / High / Medium findings fixed | Production safety |
 | `RingUniBurner.owner` moved to Gnosis Safe | EOA owner is not acceptable |
 | Timelock or equivalent delay on emergency actions | Limits burner-owner compromise blast radius |
@@ -79,16 +81,53 @@ Do not deploy meaningful mainnet volume before the final report is complete and 
 
 ## 5. Deployment Steps
 
-1. Deploy `RingUniBurner` with chain TokenJar, `fewFactory`, and temporary deployer owner.
-2. Transfer `RingUniBurner.owner` to the production Safe/timelock.
+1. Deploy the final `RingUniBurner` with chain TokenJar, `fewFactory`, and production Safe/timelock owner.
+2. Set `UNI_BURNER_ADDRESS` to the deployed burner.
 3. Mine the hook CREATE2 salt for the required v4 hook flags.
 4. Deploy `RingAggregatorHook` with immutable `poolManager`, `fewFactory`, `fewV2Factory`, `weth`, `feeRecipient`, and `uniBurner`.
 5. Verify source on Etherscan.
-6. Initialize the v4 shell pools for pairs with canonical FewTokens and direct FewV2 pairs.
-7. Run a small exact-input smoke swap.
-8. Run a small exact-output smoke swap.
-9. Flush the accrued fee through `RingUniBurner` into TokenJar.
-10. Confirm the hook and burner hold no unexpected balances.
+6. Initialize the v4 shell pools for pairs with canonical FewTokens and direct FewV2 pairs. The canonical shell key is `fee = 500`, `tickSpacing = 10`.
+7. Run a small exact-input ETH -> USDC smoke swap through `SmokeSwapEthUsdc`.
+8. Flush the accrued fee through `RingUniBurner` into TokenJar.
+9. Confirm the hook and burner hold no unexpected balances.
+
+Recommended commands:
+
+```bash
+# 1. Deploy final burner.
+forge script script/DeployUniBurner.s.sol \
+  --rpc-url "$RPC_URL" \
+  --private-key "$PRIVATE_KEY" \
+  --broadcast \
+  --via-ir
+
+# 2. Mine the router-compatible hook address.
+forge script script/MineHookAddress.s.sol \
+  --rpc-url "$RPC_URL" \
+  --via-ir
+
+# 3. Deploy the hook. Set SKIP_INIT_POOL=true if you want initialization as a separate transaction.
+forge script script/DeployMainnet.s.sol \
+  --rpc-url "$RPC_URL" \
+  --private-key "$PRIVATE_KEY" \
+  --broadcast \
+  --via-ir
+
+# 4. Initialize recommended pools after deployment.
+forge script script/InitializeRecommendedPools.s.sol \
+  --rpc-url "$RPC_URL" \
+  --private-key "$PRIVATE_KEY" \
+  --broadcast \
+  --via-ir
+
+# 5. Tiny ETH -> USDC smoke swap.
+forge script script/SmokeSwapEthUsdc.s.sol \
+  --tc SmokeSwapEthUsdc \
+  --rpc-url "$RPC_URL" \
+  --private-key "$PRIVATE_KEY" \
+  --broadcast \
+  --via-ir
+```
 
 ---
 
@@ -111,18 +150,19 @@ Collect:
 
 ## 7. Uniswap Submission Path
 
-1. Submit the hook to the Uniswap hooklist registry with source, addresses, metadata, and audit report.
-2. Apply for routing allowlist / routing-api inclusion with:
+1. Submit the new hook to the Uniswap hooklist registry with source, addresses, metadata, and audit report.
+2. Submit the Uniswap Labs hook routing allowlist form with:
    - hook address
    - verified source
    - public audit report
    - direct-only routing explanation
+   - `quote` and `pseudoTotalValueLocked` support
    - monitoring policy
    - multisig/timelock address
    - gas and smoke-test data
 3. If requested, provide proof that the hook has no owner, no pause, no upgrade, and no mutable route state.
 
-Hooklist listing improves discoverability. Routing allowlist / routing-api inclusion is the part that can create Uniswap frontend traffic.
+Hooklist listing improves discoverability. Labs routing allowlist / UniRoute inclusion is the part that can create Uniswap frontend traffic.
 
 ---
 

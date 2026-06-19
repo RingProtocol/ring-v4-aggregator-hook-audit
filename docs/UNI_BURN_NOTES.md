@@ -57,7 +57,7 @@ User cost comparison for the FewV2 route at 5 bps:
 *exactly*. This is the price the user already pays for entering a V2-curve
 30bps pool — no surcharge for going through Ring.
 
-If Ring charged 8 bps: total 38 bps -> routing-api compares 38 vs 35 (V3 30bps
+If Ring charged 8 bps: total 38 bps -> routing compares 38 vs 35 (V3 30bps
 tier) and de-prioritizes Ring on price. Lost volume = less fee flow into the
 TokenJar/Firepit pipeline.
 
@@ -104,7 +104,7 @@ to split: e.g., 2.5 bps to TokenJar/Firepit + 2.5 bps to Ring treasury. We rejec
 ### Why we still send 100% to TokenJar
 
 1. **V1 is a signaling exercise.** Ring is asking Uniswap Foundation +
-   Marketplace + routing-api maintainers to accept Ring as a peer. The
+   Marketplace + routing maintainers to accept Ring as a peer. The
    strongest possible signal is "100% into Uniswap's TokenJar path, we keep nothing." Any
    split, no matter how favorable to Uniswap, opens the question "how much
    are they really aligned?"
@@ -301,7 +301,7 @@ In `test/fork/RingAggregatorHookFork.t.sol`:
 | `test_fork_uniBurn_emitsUniFeeAccruedEvent` | Event emitted with poolId + fewToken + amount |
 | `test_attack_constructor_zeroUniBurner_reverts` | Zero address rejected at construction |
 
-All 73 tests pass (21 unit + 5 invariant + 47 fork).
+All 83 tests pass (23 unit + 5 invariant + 55 fork).
 
 ## 8. Fee configuration
 

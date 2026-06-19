@@ -1,7 +1,7 @@
 # Mechanism Provenance
 
-> Last updated: 2026-05-29
-> Branch: `audit-r3-direct-only-sor`
+> Last updated: 2026-06-19
+> Branch: `audit-router-compat-aggregator-interface`
 
 This document records where the major mechanisms come from and what is novel.
 
@@ -20,6 +20,11 @@ v4 pool endpoint tokens
 
 There is no owner, no pause, no upgrade, no mutable route state, and no user-supplied pair address.
 
+The final deployment branch adds UniRoute-facing aggregator-hook compatibility:
+pool registration events, swap events, direct `quote`, and `pseudoTotalValueLocked`.
+This is a discovery/quoting surface around the same direct FewV2 path, not an
+admin-controlled router.
+
 ---
 
 ## Mechanism Table
@@ -35,6 +40,7 @@ There is no owner, no pause, no upgrade, no mutable route state, and no user-sup
 | TokenJar push source | Uniswap protocol-fee pipeline | `RingUniBurner` unwraps and forwards fees | Adapter conformance |
 | Ownerless hook | Immutable router philosophy | No hook admin powers | Hidden privileged path review |
 | Permissionless sweep | Dust recovery pattern | Sweep always to immutable recipient | Forced ETH and dust handling |
+| Aggregator hook discovery | UniRoute external-liquidity hook pattern | `AggregatorPoolRegistered`, `HookSwap`, `quote`, `pseudoTotalValueLocked` | Routing/indexing compatibility |
 
 ---
 
@@ -53,6 +59,7 @@ There is no owner, no pause, no upgrade, no mutable route state, and no user-sup
 - The FEW wrapping layer: underlying ERC20s are wrapped to FewTokens before the FewV2 swap and unwrapped after the swap.
 - The 5 bps fee is taken in the output FewToken before unwrap.
 - The hook maps a v4 pool to an existing direct FewV2 pair.
+- The hook enforces one canonical v4 shell pool per FewV2 pair to avoid double-counting external liquidity.
 
 ---
 
@@ -86,4 +93,4 @@ Auditors should focus on whether the remaining small adapter is correct:
 5. reentrancy and callback boundaries
 6. `RingUniBurner` owner blast radius
 
-Document version: 2026-05-29. Based on `audit-r3-direct-only-sor`.
+Document version: 2026-06-19. Based on `audit-router-compat-aggregator-interface`.

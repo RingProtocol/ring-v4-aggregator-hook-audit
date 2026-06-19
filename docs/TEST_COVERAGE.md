@@ -1,9 +1,9 @@
 # Test Coverage
 
-> Last updated: 2026-05-29
-> Branch: `audit-r3-direct-only-sor`
-> Command: `ETH_RPC_URL=$ETH_RPC_URL forge coverage --ir-minimum --report lcov`
-> Result: 73/73 tests passed; `lcov.info` generated
+> Last updated: 2026-06-19
+> Branch: `audit-router-compat-aggregator-interface`
+> Command: `ETH_RPC_URL=$ETH_RPC_URL forge coverage --ir-minimum --report summary`
+> Result: 83/83 tests passed
 
 ---
 
@@ -12,15 +12,15 @@
 | Metric | Result |
 |---|---:|
 | Test suites | 4 |
-| Tests | 73 passed / 0 failed / 0 skipped |
-| Unit tests | 21 |
+| Tests | 83 passed / 0 failed / 0 skipped |
+| Unit tests | 23 |
 | Invariant tests | 5 |
-| Mainnet-fork tests | 47 |
-| Source-only line coverage | 182 / 185 = 98.38% |
-| Source-only function coverage | 27 / 27 = 100.00% |
-| Source-only branch coverage | 37 / 47 = 78.72% |
+| Mainnet-fork tests | 55 |
+| Source-only line coverage | 241 / 247 = 97.57% |
+| Source-only function coverage | 37 / 37 = 100.00% |
+| Source-only branch coverage | 44 / 59 = 74.58% |
 
-The repo-wide LCOV output also includes tests and scripts. The source-only numbers above are the useful audit view for Ring-written production code.
+The repo-wide coverage output also includes tests and deployment scripts. The source-only numbers above are the useful audit view for Ring-written production code.
 
 ---
 
@@ -28,9 +28,9 @@ The repo-wide LCOV output also includes tests and scripts. The source-only numbe
 
 | File | Lines | Functions | Branches | Notes |
 |---|---:|---:|---:|---|
-| `src/RingAggregatorHook.sol` | 142/144 = 98.61% | 20/20 = 100.00% | 26/34 = 76.47% | Direct swap path, V4Quoter, fee skim, sweep, and adversarial checks covered |
-| `src/RingUniBurner.sol` | 26/27 = 96.30% | 5/5 = 100.00% | 8/8 = 100.00% | Fee adapter and owner-only paths covered |
-| `src/lib/FewV2Math.sol` | 14/14 = 100.00% | 2/2 = 100.00% | 3/5 = 60.00% | V2 math covered by unit and invariant tests |
+| `src/RingAggregatorHook.sol` | 194/199 = 97.49% | 30/30 = 100.00% | 30/41 = 73.17% | Direct swap path, V4Quoter, aggregator quote, pseudo TVL, fee skim, sweep, and adversarial checks covered |
+| `src/RingUniBurner.sol` | 32/33 = 96.97% | 5/5 = 100.00% | 10/12 = 83.33% | Fee adapter and owner-only paths covered |
+| `src/lib/FewV2Math.sol` | 15/15 = 100.00% | 2/2 = 100.00% | 4/6 = 66.67% | V2 math covered by unit and invariant tests |
 
 ---
 
@@ -38,10 +38,10 @@ The repo-wide LCOV output also includes tests and scripts. The source-only numbe
 
 | Suite | Count | Coverage purpose |
 |---|---:|---|
-| `test/unit/FewV2Math.t.sol` | 6 | V2 quote math and rounding |
-| `test/unit/RingUniBurner.t.sol` | 15 | TokenJar push adapter, owner-only emergency paths, paused flush, unknown FewToken rejection |
+| `test/unit/FewV2Math.t.sol` | 7 | V2 quote math and rounding |
+| `test/unit/RingUniBurner.t.sol` | 16 | TokenJar push adapter, owner-only emergency paths, paused flush, unknown FewToken rejection, native ETH rescue |
 | `test/invariant/RingAggregatorHookInvariants.t.sol` | 5 | Fee accounting, exact-output gross-up, reserve sentinel |
-| `test/fork/RingAggregatorHookFork.t.sol` | 47 | Mainnet-fork integration across real Ring factories, direct FewV2 pair, V4Quoter, FewTokens, FewV2 pairs, and TokenJar |
+| `test/fork/RingAggregatorHookFork.t.sol` | 55 | Mainnet-fork integration across real Ring factories, direct FewV2 pair, V4Quoter, aggregator quote, pseudo TVL, FewTokens, FewV2 pairs, and TokenJar |
 
 ---
 
@@ -56,6 +56,10 @@ The repo-wide LCOV output also includes tests and scripts. The source-only numbe
 | Direct-route exact-output swap | Fork e2e tests |
 | Official V4Quoter quotes empty-hookData exact input | V4Quoter fork test |
 | Official V4Quoter quotes empty-hookData exact output | V4Quoter fork test |
+| Aggregator `quote` matches direct FewV2 quote | Fork tests |
+| `pseudoTotalValueLocked` matches FewV2 reserves | Fork test |
+| Duplicate v4 shell pool for same FewV2 pair reverts | Fork adversarial test |
+| Non-canonical shell pool fee reverts | Fork adversarial test |
 | Non-empty hookData still uses direct route | Fork integration tests |
 | FewToken wrap/unwrap mismatch reverts | Fork adversarial tests |
 | Pair token mismatch reverts | Fork adversarial tests |
@@ -70,13 +74,14 @@ The repo-wide LCOV output also includes tests and scripts. The source-only numbe
 
 ## Interpretation For Auditors
 
-This branch removes the prior calldata-route and default-connector route loops. The remaining review focus is narrower:
+This branch removes the prior calldata-route and default-connector route loops. The remaining review focus is:
 
 - `BeforeSwapDelta` accounting
 - direct pair validation and reserve checks
 - exact-output fee gross-up
 - external-call ordering
 - `hookData` being ignored rather than decoded
+- UniRoute compatibility reads/events: `AggregatorPoolRegistered`, `HookSwap`, `quote`, `pseudoTotalValueLocked`
 - `RingUniBurner` fee custody and TokenJar push-source behavior
 
-Coverage does not replace manual review, but it shows the direct-only execution path is exercised through unit, invariant, V4Quoter-level, and real mainnet-fork tests.
+Coverage does not replace manual review, but it shows the direct-only execution path and router-compatibility layer are exercised through unit, invariant, V4Quoter-level, aggregator-quote, and real mainnet-fork tests.

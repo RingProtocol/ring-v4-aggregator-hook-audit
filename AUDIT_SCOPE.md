@@ -2,7 +2,7 @@
 
 > **For**: external audit firm
 > **Prepared by**: Ring Protocol engineering
-> **Branch**: `audit-r3-direct-only-sor`
+> **Branch**: `audit-router-compat-aggregator-interface`
 
 This document defines what should be audited, what is out of scope, and what we have already tested.
 
@@ -13,18 +13,19 @@ This document defines what should be audited, what is out of scope, and what we 
 | | |
 |---|---|
 | **Repository** | `github.com/RingProtocol/ring-v4-aggregator-hook-audit` |
-| **Audit branch** | `audit-r3-direct-only-sor` |
-| **Base** | Derived from the `audit-ownerless-calldata-route-2026-05-25-r3` audit package, then simplified to direct-only routing |
+| **Final deployment branch** | `audit-router-compat-aggregator-interface` |
+| **Base** | Derived from the ABDK-reviewed direct-only package, then extended with a narrow UniRoute aggregator-hook compatibility layer |
 | **Compiler** | Solidity `0.8.26`, `via_ir = true`, optimizer 200 runs, EVM Cancun |
 | **Framework** | Foundry |
-| **Build** | Ownerless direct-only hook + 5 bps TokenJar fee adapter |
+| **Build** | Ownerless direct-only hook + UniRoute compatibility + 5 bps TokenJar fee adapter |
+| **Public audit report** | [`docs/ABDK_Ring_Aggregator_Hook_Audit_Report_v1.1.pdf`](docs/ABDK_Ring_Aggregator_Hook_Audit_Report_v1.1.pdf) |
 
 Clone and test:
 
 ```bash
 git clone --recurse-submodules git@github.com:RingProtocol/ring-v4-aggregator-hook-audit.git
 cd ring-v4-aggregator-hook-audit
-git checkout audit-r3-direct-only-sor
+git checkout audit-router-compat-aggregator-interface
 forge build
 forge test --offline --no-match-path "test/fork/*"
 ETH_RPC_URL=https://... forge test
@@ -38,11 +39,11 @@ Line counts below are nSLOC: comments, blank lines, tests, scripts, interfaces, 
 
 | Contract | nSLOC | Role | Priority |
 |---|---:|---|---|
-| `src/RingAggregatorHook.sol` | 312 | Direct-only Uniswap v4 hook. Wraps input, swaps through the direct FewV2 pair, skims 5 bps, unwraps output, and settles via PoolManager. Ownerless. | Critical |
-| `src/RingUniBurner.sol` | 54 | TokenJar push-source adapter. Unwraps fee FewTokens and forwards underlying tokens to Uniswap TokenJar. Owner-managed. | High |
-| `src/lib/FewV2Math.sol` | 29 | V2 `getAmountOut` / `getAmountIn` math used for exact-in and exact-out quoting. | High |
+| `src/RingAggregatorHook.sol` | 406 | Direct-only Uniswap v4 hook. Wraps input, swaps through the direct FewV2 pair, skims 5 bps, unwraps output, settles via PoolManager, and exposes UniRoute aggregator-hook compatibility (`AggregatorPoolRegistered`, `HookSwap`, `quote`, `pseudoTotalValueLocked`). Ownerless. | Critical |
+| `src/RingUniBurner.sol` | 64 | TokenJar push-source adapter. Unwraps fee FewTokens and forwards underlying tokens to Uniswap TokenJar. Owner-managed. | High |
+| `src/lib/FewV2Math.sol` | 32 | V2 `getAmountOut` / `getAmountIn` math used for exact-in and exact-out quoting. | High |
 
-**Total Ring-written production review surface: 395 nSLOC.**
+**Total Ring-written production review surface: 502 nSLOC.**
 
 ---
 
@@ -104,17 +105,28 @@ The hook now uses only the direct FewV2 pair for each v4 pool. Multi-hop paths a
 
 `hookData` is ignored for routing in this branch. This keeps default router / quoter integrations from needing Ring-specific calldata while avoiding a revert if an integrator passes non-empty hookData.
 
+The router-compatible final branch adds only UniRoute-facing compatibility:
+
+- `AggregatorPoolRegistered(poolId)` emitted during pool initialization
+- `HookSwap(poolId, sender, amount0, amount1, swapFee)` emitted during swaps
+- `quote(bool zeroForOne, int256 amountSpecified, PoolId poolId)` for direct aggregator quoting
+- `pseudoTotalValueLocked(PoolId poolId)` so external FewV2 liquidity is visible to routing
+- canonical shell pool enforcement: `fee = 500`, `tickSpacing = 10`
+- one v4 shell pool per FewV2 pair to avoid double-counting the same external liquidity
+
+The swap business logic is unchanged: direct-only FewV2 route, no connector engine, no user-supplied path, no route setter, no admin, no pause, no upgrade.
+
 ---
 
 ## 7. Tests
 
 | Suite | Count | Notes |
 |---|---:|---|
-| `test/unit/FewV2Math.t.sol` | 6 | V2 math and rounding |
-| `test/unit/RingUniBurner.t.sol` | 15 | TokenJar adapter, owner-only paths, pause, unknown FewToken rejection |
+| `test/unit/FewV2Math.t.sol` | 7 | V2 math and rounding |
+| `test/unit/RingUniBurner.t.sol` | 16 | TokenJar adapter, owner-only paths, pause, unknown FewToken rejection, native ETH rescue |
 | `test/invariant/RingAggregatorHookInvariants.t.sol` | 5 | Fee math, exact-output gross-up, reserve sentinel |
-| `test/fork/RingAggregatorHookFork.t.sol` | 47 | Mainnet fork with real Ring factories, FewTokens, FewV2 pairs, V4Quoter, TokenJar path, and adversarial cases |
-| **Total** | **73** | 100% passing |
+| `test/fork/RingAggregatorHookFork.t.sol` | 55 | Mainnet fork with real Ring factories, FewTokens, FewV2 pairs, V4Quoter, aggregator quote, pseudo TVL, TokenJar path, and adversarial cases |
+| **Total** | **83** | 100% passing |
 
 Covered adversarial cases include direct hook calls, bad initialization, no direct pair, wrap/unwrap mismatch, pair token mismatch, degenerate reserves, forced ETH, permissionless sweep, sweep reentrancy, fee skim correctness, and end-to-end TokenJar forwarding.
 
@@ -124,16 +136,16 @@ Covered adversarial cases include direct hook calls, bad initialization, no dire
 
 | Artifact | Result |
 |---|---|
-| [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Slither: 7 findings, 0 real issues |
-| [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) | Source coverage: 182/185 lines = 98.38%; 27/27 functions = 100% |
+| [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Slither: 8 findings, 0 real issues |
+| [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) | Test matrix: 83/83 passing |
 
 ---
 
 ## 9. Trust Model
 
-1. `RingAggregatorHook` has no owner, no admin function, no pause, no upgrade, and no route registry.
-2. Each v4 pool requires canonical FewToken endpoints and a direct FewV2 pair at initialization.
-3. During swap, the pair is re-derived from immutable `fewV2Factory`; callers never supply pair addresses.
+1. `RingAggregatorHook` has no owner, no admin function, no pause, no upgrade, and no mutable route setter.
+2. Each v4 pool requires canonical FewToken endpoints, canonical fee/tick spacing, and a direct FewV2 pair at initialization.
+3. During swap, the route is read from initialization-time registration and remains bound to immutable `fewFactory` / `fewV2Factory`; callers never supply pair addresses.
 4. User slippage is enforced by the Uniswap router around the v4 swap. Direct `PoolManager` callers are using a low-level interface and accept their own slippage risk.
 5. `RingUniBurner.owner` is the only privileged role and is isolated to accrued protocol fees held by the burner.
 
@@ -144,12 +156,13 @@ Covered adversarial cases include direct hook calls, bad initialization, no dire
 1. Are `BeforeSwapDelta` signs and PoolManager settlement correct for exact-in and exact-out, both directions?
 2. Is exact-output gross-up for the 5 bps fee free of an under-quote edge case?
 3. Does direct pair validation fully prevent fake FewTokens, fake pairs, pair token mismatch, and reserve-edge failures?
-4. Does ignoring `hookData` introduce any integration or security concern for Universal Router / V4Quoter usage?
+4. Does ignoring `hookData` introduce any integration or security concern for Universal Router / V4Quoter / UniRoute usage?
 5. Is the hook genuinely ownerless with no hidden route-control, pause, fee-control, or upgrade surface?
 6. Can any external token, wrapper, pair, or callback path reenter despite `nonReentrant`?
 7. Can the 5 bps fee transfer to immutable `uniBurner` be griefed or used to affect user settlement?
 8. Is `RingUniBurner.owner` correctly scoped to accrued protocol fees and unable to reach user swap funds?
 9. Does `RingUniBurner` fit Uniswap's TokenJar push-source / fee-adapter model?
+10. Is the UniRoute compatibility layer (`quote`, `pseudoTotalValueLocked`, canonical pool registration) correctly read-only / event-only around the unchanged swap path?
 
 ---
 
