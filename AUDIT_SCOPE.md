@@ -4,6 +4,8 @@
 > **Prepared by**: Ring Protocol engineering
 > **Branch**: `audit-router-compat-aggregator-interface`
 
+> **ABDK coverage boundary**: report v1.1 covers the direct-only core and its reviewed fixes. The later UniRoute compatibility commits `14abfbd...df9752f` are part of this review target but are not covered by that report.
+
 This document defines what should be audited, what is out of scope, and what we have already tested.
 
 ---
@@ -14,7 +16,7 @@ This document defines what should be audited, what is out of scope, and what we 
 |---|---|
 | **Repository** | `github.com/RingProtocol/ring-v4-aggregator-hook-audit` |
 | **Final deployment branch** | `audit-router-compat-aggregator-interface` |
-| **Base** | Derived from the ABDK-reviewed direct-only package, then extended with a narrow UniRoute aggregator-hook compatibility layer |
+| **Base** | ABDK-reviewed direct-only package plus a later UniRoute aggregator-hook compatibility layer that still requires delta review |
 | **Compiler** | Solidity `0.8.26`, `via_ir = true`, optimizer 200 runs, EVM Cancun |
 | **Framework** | Foundry |
 | **Build** | Ownerless direct-only hook + UniRoute compatibility + 5 bps TokenJar fee adapter |
@@ -136,7 +138,7 @@ Covered adversarial cases include direct hook calls, bad initialization, no dire
 
 | Artifact | Result |
 |---|---|
-| [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Slither: 8 findings, 0 real issues |
+| [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | Current local Slither run: 7 outputs, all triaged |
 | [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) | Test matrix: 83/83 passing |
 
 ---
@@ -163,6 +165,8 @@ Covered adversarial cases include direct hook calls, bad initialization, no dire
 8. Is `RingUniBurner.owner` correctly scoped to accrued protocol fees and unable to reach user swap funds?
 9. Does `RingUniBurner` fit Uniswap's TokenJar push-source / fee-adapter model?
 10. Is the UniRoute compatibility layer (`quote`, `pseudoTotalValueLocked`, canonical pool registration) correctly read-only / event-only around the unchanged swap path?
+11. Which changes are required to align with the current official `BaseAggregatorHook`, `IFeeClassifiedHook`, protocol-fee family, and first-byte address-ID system?
+12. Would the candidate's fixed 5 bps skim overlap with the current PoolManager classified-hook protocol fee, and what single fee path should be retained?
 
 ---
 

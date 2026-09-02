@@ -2,7 +2,7 @@
 
 > **Purpose**: tell external auditors what we already found and how we disposed of it, so audit hours go to net-new analysis. This is not a claim that these are the only issues.
 >
-> **Build**: `audit-r3-direct-only-sor`. Ownerless direct-only hook + 5 bps TokenJar fee pipeline. The hook has no owner, no pause, no admin routes, no connector router, no calldata path engine, and no user-supplied pair addresses.
+> **Build**: `audit-router-compat-aggregator-interface`. Ownerless direct-only hook + UniRoute compatibility + current 5 bps TokenJar fee pipeline. The hook has no owner, no pause, no admin routes, no connector router, no calldata path engine, and no user-supplied pair addresses.
 
 ---
 
@@ -70,6 +70,20 @@ Earlier revisions had a mutable burner pointer. This branch uses an immutable `u
 
 ---
 
+## Open Integration Decisions
+
+These are not accepted production risks. They block a replacement deployment until Uniswap confirms the intended architecture.
+
+| ID | Decision needed | Current boundary |
+|---|---|---|
+| I1 | Official aggregator-hook base and ABI | Candidate exposes `AggregatorPoolRegistered`, `HookSwap`, `quote`, and `pseudoTotalValueLocked`, but does not inherit the latest official `BaseAggregatorHook` or implement `IFeeClassifiedHook`. |
+| I2 | Protocol fee | Candidate takes a fixed 5 bps fee. The current official base also supports a PoolManager classified-hook fee. One unambiguous path is required to prevent double charging. |
+| I3 | Address ID | Candidate mining enforces permission bits only. The current official miner also requires a first-byte protocol ID, which has not been assigned to Ring/FewV2. |
+| I4 | Security scope | ABDK report v1.1 does not cover the later router-compatible commits `14abfbd...df9752f`. |
+| I5 | Routing enablement | Hooklist PR #601 is merged, but Labs routing PR #1404 remains open with no reviews recorded on the public PR page for the older deployed address. |
+
+---
+
 ## Removed Risk Classes
 
 The current branch removes:
@@ -105,7 +119,7 @@ The prior `calls-loop` category disappeared because connector routing and callda
 
 1. **"The v4 pool shows $0 TVL."** Expected. The v4 pool is a shell; liquidity is in FewV2, and the hook absorbs the swap in `beforeSwap`.
 2. **"routing-api may not find a zero-liquidity pool automatically."** Expected integration work. The hook needs hooklist / routing allowlist review. On-chain V4Quoter quotes it because it executes `beforeSwap`; fork tests cover exact-in and exact-out.
-3. **"`key.fee = 3000` but no v4 fee is collected."** Intentional. The v4 AMM loop is bypassed by full delta absorption. The real LP fee is inside the FewV2 pair swap, and Ring's 5 bps protocol fee is skimmed in the hook.
+3. **"`key.fee = 500` but no native v4 AMM fee is collected."** The v4 AMM loop is bypassed by full delta absorption. The real LP fee is inside the FewV2 pair swap. The candidate separately skims Ring's fixed 5 bps fee, but its relationship to Uniswap's current classified-hook protocol fee remains an open integration decision.
 4. **"A better `A -> X -> B` route is not searched inside the hook."** Intentional. This branch relies on Uniswap routing to compose multiple hook pools, keeping hook code small.
 
 ---

@@ -13,12 +13,16 @@
 | UniRoute aggregator compatibility | Done |
 | RingUniBurner fee adapter | Done |
 | Tests | 83/83 passing |
-| Slither | 8 findings triaged, 0 real issues |
+| Slither | 7 current outputs triaged; no code change required |
 | Audit scope | 502 nSLOC Ring-written production code |
-| External audit | ABDK public report v1.1 included |
+| External audit | ABDK public report v1.1 covers the direct-only core and reviewed fixes; router-compatible delta review pending |
+| Uniswap code-path decision | Pending: official contribution versus independent hook |
+| Uniswap fee decision | Pending: fixed Ring skim versus classified-hook protocol fee |
+| Aggregator address ID | Pending assignment from Uniswap |
 | Burner owner multisig/timelock | Pending |
-| Mainnet deployment | Ready after final address review |
-| Uniswap hooklist / Labs routing allowlist | Re-submit after new router-compatible deployment |
+| Replacement mainnet deployment | Blocked on the decisions and reviews above |
+| Uniswap hooklist | PR #601 merged for the older deployed direct-only hook |
+| Uniswap Labs routing | PR #1404 open with no reviews recorded on the public PR page for the older deployed address |
 
 ---
 
@@ -42,15 +46,30 @@ Reading order:
 2. `README.md`
 3. `docs/DIRECT_ONLY_ROUTING.md`
 4. `docs/DESIGN.md`
-5. `docs/RATIONALE.md`
-6. `docs/SLITHER_TRIAGE.md`
-7. `docs/TEST_COVERAGE.md`
-8. `docs/OWNER_KEY_COMPROMISE.md`
-9. `docs/UNI_BURN_NOTES.md`
+5. `KNOWN_ISSUES.md`
+6. `docs/ABDK_FIX_MATRIX.md`
+7. `docs/SLITHER_TRIAGE.md`
+8. `docs/TEST_COVERAGE.md`
+9. `docs/OWNER_KEY_COMPROMISE.md`
 
 ---
 
-## 3. Audit Phase
+## 3. Uniswap Architecture Gate
+
+Before freezing a replacement deployment commit, obtain written answers for:
+
+1. official `v4-hooks-public` contribution versus independent Ring implementation;
+2. one protocol-fee path, including `IFeeClassifiedHook` and PoolManager fee configuration;
+3. assigned first-byte aggregator-hook address ID;
+4. required current ABI, events, PoolKey behavior, and version reporting;
+5. UniRoute, indexing, gas-calibration, allowlist, and delisting owners;
+6. accepted security evidence and the exact delta-review scope.
+
+Do not mine a replacement address or change fee logic until these decisions are recorded.
+
+---
+
+## 4. Audit Phase
 
 Expected work:
 
@@ -65,12 +84,14 @@ Do not deploy meaningful mainnet volume before the final report is complete and 
 
 ---
 
-## 4. Pre-Deploy Requirements
+## 5. Pre-Deploy Requirements
 
 | Requirement | Reason |
 |---|---|
 | Public audit report | Included for hooklist / routing reviewers and public trust |
 | All Critical / High / Medium findings fixed | Production safety |
+| Router-compatible delta independently reviewed | ABDK report does not cover `14abfbd...df9752f` |
+| Uniswap fee and address-ID decisions implemented | Prevents fee duplication and incompatible deployment address |
 | `RingUniBurner.owner` moved to Gnosis Safe | EOA owner is not acceptable |
 | Timelock or equivalent delay on emergency actions | Limits burner-owner compromise blast radius |
 | Deployment addresses reviewed by two engineers | Prevent immutable wiring mistakes |
@@ -79,7 +100,7 @@ Do not deploy meaningful mainnet volume before the final report is complete and 
 
 ---
 
-## 5. Deployment Steps
+## 6. Deployment Steps
 
 1. Deploy the final `RingUniBurner` with chain TokenJar, `fewFactory`, and production Safe/timelock owner.
 2. Set `UNI_BURNER_ADDRESS` to the deployed burner.
@@ -131,7 +152,7 @@ forge script script/SmokeSwapEthUsdc.s.sol \
 
 ---
 
-## 6. Post-Deploy Review
+## 7. Post-Deploy Review
 
 Collect:
 
@@ -148,7 +169,7 @@ Collect:
 
 ---
 
-## 7. Uniswap Submission Path
+## 8. Uniswap Submission Path
 
 1. Submit the new hook to the Uniswap hooklist registry with source, addresses, metadata, and audit report.
 2. Submit the Uniswap Labs hook routing allowlist form with:
@@ -164,9 +185,11 @@ Collect:
 
 Hooklist listing improves discoverability. Labs routing allowlist / UniRoute inclusion is the part that can create Uniswap frontend traffic.
 
+Routing inclusion only makes the hook eligible for selection. The router still compares price, gas, and route quality for every quote, so neither listing nor allowlisting guarantees transaction volume.
+
 ---
 
-## 8. Emergency Response
+## 9. Emergency Response
 
 The hook has no pause. Response tools are:
 
@@ -180,12 +203,13 @@ The hook should never rely on a privileged key to protect user swap funds.
 
 ---
 
-## 9. Go / No-Go Gates
+## 10. Go / No-Go Gates
 
 | Gate | Owner | Required before continuing |
 |---|---|---|
+| Architecture alignment | Engineering / Uniswap reviewer | Code path, fee, address ID, ABI, and integration owners confirmed |
 | Audit kickoff | Engineering | Frozen branch and scope confirmed |
 | Audit completion | Engineering / leadership | Public report accepted internally |
-| Mainnet deployment | Engineering / Safe signers | Audit fixes complete, multisig live |
+| Mainnet deployment | Engineering / Safe signers | Official decisions implemented, delta review complete, multisig live |
 | Routing submission | Engineering / BD | Deployment verified and smoke-tested |
 | Meaningful volume | Leadership | Monitoring live and routing path approved |

@@ -1,10 +1,18 @@
-# ring-v4-aggregator-hook-audit
+# Ring FewV2 Aggregator Hook: Uniswap Review Package
 
 Clean-history public audit mirror for Ring's Uniswap v4 aggregator hook.
 
-This hook exposes Ring's existing FewV2 liquidity as Uniswap v4 swapable pools. A Uniswap swap such as `ETH -> USDC` can be settled by the hook through the matching `fwETH/fwUSDC` FewV2 pair, while the user only sees the underlying tokens.
+This hook exposes Ring's existing FewV2 liquidity as Uniswap v4 swappable pools. A Uniswap swap such as `ETH -> USDC` can be settled by the hook through the matching `fwETH/fwUSDC` FewV2 pair, while the user only sees the underlying tokens.
 
-> **Status**: `audit-router-compat-aggregator-interface` branch. Direct-only ownerless hook with UniRoute aggregator-hook compatibility, 83/83 tests passing, V4Quoter and aggregator `quote` fork tests passing, Slither triaged at 8 findings / 0 real issues.
+> **Status (September 1, 2026)**: review candidate based on `df9752f`. Local validation passes 83/83 tests, including mainnet-fork V4Quoter and aggregator `quote` coverage. The router-compatible delta is not covered by the included ABDK report, has not been deployed, and is not officially enabled in Uniswap routing.
+
+## Review Scope
+
+- Public repository: <https://github.com/RingProtocol/ring-v4-aggregator-hook-audit>
+- Review branch: <https://github.com/RingProtocol/ring-v4-aggregator-hook-audit/tree/audit-router-compat-aggregator-interface>
+- Start with [`AUDIT_SCOPE.md`](AUDIT_SCOPE.md), [`docs/DESIGN.md`](docs/DESIGN.md), and the included ABDK report.
+
+The main decisions still required from Uniswap are the supported code location, one non-duplicative protocol-fee path, the assigned aggregator-hook address ID, current interface requirements, and the exact UniRoute/indexing rollout owners. No replacement address should be mined or deployed before those decisions are confirmed.
 
 ---
 
@@ -24,7 +32,7 @@ The v4 pool holds zero liquidity. All liquidity comes from the direct FewV2 pair
 
 Multi-hop price improvement is intentionally left to Uniswap routing. If `A -> X -> B` is better than `A -> B`, the router can compose two v4 pools and call the hook twice: once for `A -> X`, then once for `X -> B`. This keeps the hook small and removes the in-hook connector search / calldata path surface.
 
-For Uniswap Labs / UniRoute discovery, this branch adds a narrow aggregator-hook compatibility layer: `AggregatorPoolRegistered`, `HookSwap`, `quote`, and `pseudoTotalValueLocked`. The core swap path remains direct-only.
+For Uniswap Labs / UniRoute discovery, this branch adds a narrow aggregator-hook compatibility layer: `AggregatorPoolRegistered`, `HookSwap`, `quote`, and `pseudoTotalValueLocked`. The core swap path remains direct-only. The candidate predates the latest official `BaseAggregatorHook`, `IFeeClassifiedHook`, protocol-fee family, and first-byte address-ID conventions; their required adoption is an open review question, not an assumed integration.
 
 ---
 
@@ -47,8 +55,8 @@ Routing is fixed by immutable constructor wiring and live FewV2 pair state. Each
 | Routing | Direct FewV2 pair only. `hookData` is ignored for routing so default router / quoter integrations do not need Ring-specific calldata. |
 | UniRoute compatibility | Registers one canonical v4 shell pool per FewV2 pair and exposes `quote` / `pseudoTotalValueLocked` for external-liquidity routing. |
 | Liquidity source | `fewFactory` and `fewV2Factory` are immutable. FewTokens and pairs are derived on-chain. |
-| Protocol fee | `PROTOCOL_FEE_BPS = 5`. Gross output fee is sent to immutable `uniBurner`. |
-| Fee pipeline | Ring pushes fees into Uniswap's TokenJar via `RingUniBurner`; Uniswap's Firepit handles the downstream UNI burn. |
+| Candidate fee | `PROTOCOL_FEE_BPS = 5`. Gross output fee is sent to immutable `uniBurner`. |
+| Open fee decision | The latest official aggregator base uses the PoolManager classified-hook fee path. Uniswap must confirm whether Ring replaces its fixed skim or how the PoolManager fee is configured to prevent double charging. |
 | Emergency | The hook has no pause. Failure response is per-swap revert, routing-layer delist, or redeploy. |
 | Sweep | `sweep(token)` is permissionless and always sends to immutable `feeRecipient`. |
 
@@ -76,17 +84,16 @@ Interfaces, tests, scripts, docs, and pinned third-party dependencies are out of
 | File | Purpose |
 |---|---|
 | [`AUDIT_SCOPE.md`](AUDIT_SCOPE.md) | External-audit package: in scope, out of scope, nSLOC, questions |
+| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | Accepted limitations and unresolved integration risks |
 | [`docs/ABDK_Ring_Aggregator_Hook_Audit_Report_v1.1.pdf`](docs/ABDK_Ring_Aggregator_Hook_Audit_Report_v1.1.pdf) | ABDK public audit report for the core hook review |
+| [`docs/ABDK_FIX_MATRIX.md`](docs/ABDK_FIX_MATRIX.md) | Finding-to-fix traceability for the included report |
 | [`docs/DIRECT_ONLY_ROUTING.md`](docs/DIRECT_ONLY_ROUTING.md) | Direct-only routing model and why SOR composes multi-hop paths |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture reference |
-| [`docs/RATIONALE.md`](docs/RATIONALE.md) | Design decisions and rejected alternatives |
 | [`docs/SLITHER_TRIAGE.md`](docs/SLITHER_TRIAGE.md) | 7 Slither findings triaged, 0 real issues |
 | [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) | Coverage and test matrix |
 | [`docs/OWNER_KEY_COMPROMISE.md`](docs/OWNER_KEY_COMPROMISE.md) | Residual key analysis for `RingUniBurner.owner` |
-| [`docs/UNI_BURN_NOTES.md`](docs/UNI_BURN_NOTES.md) | 5 bps TokenJar / Firepit fee path |
-| [`docs/GO_LIVE_MECHANICS.md`](docs/GO_LIVE_MECHANICS.md) | How swaps reach the hook after listing / routing integration |
 | [`docs/DEPLOYMENT_FLOW.md`](docs/DEPLOYMENT_FLOW.md) | Audit-to-deploy roadmap |
-| [`docs/INDEX.md`](docs/INDEX.md) | One-page documentation guide |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting policy |
 
 ---
 
@@ -113,17 +120,14 @@ script/
 └── SmokeSwapEthUsdc.s.sol
 
 docs/
-├── DIRECT_ONLY_ROUTING.md
-├── DESIGN.md
-├── RATIONALE.md
-├── SLITHER_TRIAGE.md
-├── TEST_COVERAGE.md
-├── OWNER_KEY_COMPROMISE.md
-├── UNI_BURN_NOTES.md
-├── GO_LIVE_MECHANICS.md
+├── ABDK_FIX_MATRIX.md
+├── ABDK_Ring_Aggregator_Hook_Audit_Report_v1.1.pdf
 ├── DEPLOYMENT_FLOW.md
-├── MECHANISM_PROVENANCE.md
-└── INDEX.md
+├── DESIGN.md
+├── DIRECT_ONLY_ROUTING.md
+├── OWNER_KEY_COMPROMISE.md
+├── SLITHER_TRIAGE.md
+└── TEST_COVERAGE.md
 ```
 
 ---
@@ -200,14 +204,17 @@ The hook has no owner to transfer after deployment. The burner owner must be tra
 
 | Item | State |
 |---|---|
-| Code complete | Yes |
-| Tests | 83/83 passing |
+| Candidate implementation | Complete locally; official architecture alignment pending |
+| Tests | 83/83 passing locally on September 1, 2026 |
 | V4Quoter / aggregator quote fork coverage | Exact-input and exact-output direct route tests passing |
-| Slither | 8 findings triaged, 0 real issues |
+| Slither | 7 outputs triaged, 0 code changes required in the current local run |
 | Hook admin surface | None |
-| External audit | ABDK public report v1.1 included; router-compat delta is narrow and tested |
+| External audit | ABDK public report v1.1 covers the direct-only core and reviewed fixes; commits `14abfbd...df9752f` require separate delta review |
 | Multisig for `RingUniBurner.owner` | Required before meaningful volume |
-| Uniswap hooklist / Labs routing allowlist | Re-submit after deploying this router-compatible hook address |
+| Deployed hook | Direct-only commit `489f774` at `0x1C94Eb938FfB066c3A5F0D43E44a428f35a1e888`; not this candidate |
+| Uniswap hooklist | PR #601 merged for the deployed direct-only hook |
+| Uniswap Labs routing | PR #1404 remains open with no reviews recorded on the public PR page; production routing is not verified |
+| Replacement deployment | Blocked on official fee, address-ID, ABI, delta-review, and Safe/timelock decisions |
 
 ---
 
@@ -216,6 +223,7 @@ The hook has no owner to transfer after deployment. The burner owner must be tra
 | Topic | Link |
 |---|---|
 | Uniswap official hooklist registry | https://github.com/Uniswap/hooklist |
+| Uniswap official aggregator-hook implementations | https://github.com/Uniswap/v4-hooks-public/tree/main/src/aggregator-hooks |
 | Uniswap protocol-fees (TokenJar + Firepit) | https://github.com/Uniswap/protocol-fees |
 | Uniswap Labs hook routing allowlist | https://developers.uniswap.org/hook-allowlist |
 | UniRoute public reference | https://github.com/Uniswap/uniroute-public |

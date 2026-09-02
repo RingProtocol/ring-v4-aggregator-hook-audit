@@ -1,8 +1,8 @@
 # Ring V4 Aggregator Hook - Ownerless Direct-Only Design
 
-> Last updated: 2026-06-19
-> Deployment target: `audit-router-compat-aggregator-interface`
-> Status: implementation complete; 83/83 tests passing; Slither triaged; coverage regenerated
+> Last updated: 2026-09-01
+> Review target: `audit-router-compat-aggregator-interface`
+> Status: implementation complete locally; official fee, address-ID, ABI, and routing decisions pending; router-compatible delta not covered by the ABDK report
 
 ---
 
@@ -248,11 +248,13 @@ Highest-value review targets:
 ## 13. Audit Readiness
 
 - Build: green
-- Tests: 83/83 passing
-- Source coverage: 241/247 lines = 97.57%; 37/37 functions = 100.00%
-- Slither: 8 findings triaged as false-positive / by-design; 0 real issues
+- Tests: 83/83 passing locally on September 1, 2026
+- Source coverage snapshot from June 19, 2026: 241/247 lines = 97.57%; 37/37 functions = 100.00%
+- Slither: 7 current outputs triaged; no code change required
 - Ring-written production review surface: 502 nSLOC
 - Hook governance surface: none
 - Residual privileged key: only `RingUniBurner.owner`, documented separately
+- ABDK coverage boundary: direct-only core and reviewed fixes; later `14abfbd...df9752f` router-compatible delta excluded
+- Uniswap alignment: current official base contract, fee family, first-byte ID, and routing configuration still unconfirmed
 
-The code is ready for final deployment review from a scope-definition perspective.
+The code is ready for Uniswap architecture review and a focused security delta review. It is not yet authorized for a replacement deployment.

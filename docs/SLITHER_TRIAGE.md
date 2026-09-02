@@ -1,18 +1,18 @@
 # Slither Triage Report
 
-> **Tool**: Slither 0.11.5
-> **Date**: 2026-06-19
+> **Tool**: Slither 0.11.4
+> **Date**: 2026-09-01
 > **Branch**: `audit-router-compat-aggregator-interface`
 > **Scope**: `src/RingAggregatorHook.sol`, `src/RingUniBurner.sol`, `src/lib/FewV2Math.sol`
-> **Result**: 8 findings, 0 real issues
-> **Run summary**: `42 contracts analyzed (98 detectors), 8 result(s) found`
+> **Result**: 7 outputs, all triaged; no code change required
+> **Run summary**: `42 contracts analyzed (97 detectors), 7 result(s) found`
 
 ---
 
 ## Reproduce
 
 ```bash
-uvx --from slither-analyzer slither . \
+slither . \
   --filter-paths "lib/|test/|script/" \
   --exclude naming-convention,solc-version,pragma
 ```
@@ -31,7 +31,6 @@ Excluded detectors:
 
 | Detector | Location | Verdict |
 |---|---|---|
-| `reentrancy-balance` | `RingUniBurner.flush` unwrap balance check | False positive |
 | `incorrect-equality` | `RingUniBurner.flush` zero-balance no-op | By design |
 | `reentrancy-no-eth` | `RingAggregatorHook._ensureApproval` approval cache write | False positive |
 | `unused-return` | `RingAggregatorHook._hopState` ignores V2 timestamp | By design |
@@ -48,7 +47,7 @@ The prior `calls-loop` category is gone in this branch because connector routing
 
 ### `RingUniBurner.flush` balance checks
 
-`flush(fewToken)` reads the burner's own FewToken balance, unwraps exactly that balance, checks the unwrap amount, and transfers the resulting underlying token to TokenJar. The function is `nonReentrant`, and the FewToken is canonical-validated through `fewFactory`. A mismatch reverts. The zero-balance equality check is the exact no-op condition.
+`flush(fewToken)` reads the burner's own FewToken balance, unwraps exactly that balance, checks the unwrap amount, and transfers the resulting underlying token to TokenJar. The function is `nonReentrant`, and the FewToken is canonical-validated through `fewFactory`. A mismatch reverts. The reported zero-balance equality is the exact no-op condition.
 
 ### `_ensureApproval`
 
@@ -74,4 +73,4 @@ The hook uses `call` to transfer ETH to the immutable `feeRecipient`, which is t
 
 ## Summary
 
-All 8 outputs are false-positive or by-design. No Slither finding requires a code change.
+All 7 current outputs are false-positive or by-design. No current Slither output requires a code change.

@@ -16,10 +16,8 @@ lcov.info
 coverage/
 *.lcov
 
-# ─── AI agent / dev tool runtime state ───
-# These contain tool error dumps, session metadata, command history — never
-# meant to be tracked in source control. Keep AI-generated *content* under
-# docs/ (which is tracked), but exclude tool-runtime state.
+# ─── Local editor and tool state ───
+# Runtime state, error dumps, session metadata, and command history are local.
 .omc/
 .claude/
 .cursor/

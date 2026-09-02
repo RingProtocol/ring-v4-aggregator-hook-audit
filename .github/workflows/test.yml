@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, "audit/**", "baseline-0bps"]
+    # Run on every pushed review branch. The prior filter did not match
+    # `audit-router-compat-aggregator-interface`.
   pull_request:
-    branches: [main]
 
 env:
   FOUNDRY_PROFILE: default
@@ -75,7 +75,7 @@ jobs:
         uses: crytic/slither-action@v0.4.0
         with:
           target: "."
-          # All 28 detector hits are triaged in docs/SLITHER_TRIAGE.md
+          # All current detector outputs are triaged in docs/SLITHER_TRIAGE.md
           # (0 real findings). CI must not gate on triaged informational
           # output, but Slither still runs and its log is reviewable.
           fail-on: none

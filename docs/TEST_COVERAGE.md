@@ -5,6 +5,8 @@
 > Command: `ETH_RPC_URL=$ETH_RPC_URL forge coverage --ir-minimum --report summary`
 > Result: 83/83 tests passed
 
+> **Freshness note (September 1, 2026):** the same 83 tests were rerun successfully, including all 55 mainnet-fork tests. Coverage percentages below remain the June 19 snapshot and were not represented as a new coverage run.
+
 ---
 
 ## Headline
