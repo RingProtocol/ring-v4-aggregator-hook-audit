@@ -12,8 +12,8 @@ import {IFewFactory} from "../src/interfaces/external/IFewFactory.sol";
 import {ISwapV2Factory} from "../src/interfaces/external/IFewV2.sol";
 
 /// @notice Mine a CREATE2 salt for RingAggregatorHook so its address encodes the
-///         beforeInitialize | beforeAddLiquidity | beforeSwap | beforeSwapReturnsDelta flags
-///         (mask 0x2888) in the lowest 14 bits.
+///         beforeInitialize | beforeSwap | beforeSwapReturnsDelta flags
+///         (mask 0x2088) in the lowest 14 bits.
 ///
 ///         Run BEFORE deployment day:
 ///
@@ -44,18 +44,15 @@ contract MineHookAddress is Script {
         address feeRecipient = vm.envAddress("FEE_RECIPIENT_ADDRESS");
         address uniBurner = vm.envAddress("UNI_BURNER_ADDRESS");
 
-        // The four flags the contract subscribes to.
+        // The three flags the contract subscribes to.
         // Bit positions (from v4-core/src/libraries/Hooks.sol):
         //   BEFORE_INITIALIZE_FLAG          = 1 << 13   = 0x2000
-        //   BEFORE_ADD_LIQUIDITY_FLAG       = 1 << 11   = 0x0800
         //   BEFORE_SWAP_FLAG                = 1 <<  7   = 0x0080
         //   BEFORE_SWAP_RETURNS_DELTA_FLAG  = 1 <<  3   = 0x0008
         //   ─────────────────────────────────────────────────────
-        //   Combined mask                                = 0x2888
-        uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG
-                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
-        );
+        //   Combined mask                                = 0x2088
+        uint160 flags =
+            uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG);
 
         bytes memory creationCode = type(RingAggregatorHook).creationCode;
         bytes memory ctorArgs = abi.encode(
