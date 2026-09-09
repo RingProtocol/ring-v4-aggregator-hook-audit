@@ -146,10 +146,8 @@ contract RingAggregatorHookForkTest is Test {
         burner = new RingUniBurner(TOKEN_JAR_MAINNET, FEW_FACTORY, BURNER_OWNER);
 
         // 2. Mine a salt for the hook permission flags.
-        uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG
-                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
-        );
+        uint160 flags =
+            uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG);
         bytes memory creationCode = type(RingAggregatorHook).creationCode;
         bytes memory ctorArgs = abi.encode(
             IPoolManager(V4_PM),
@@ -660,19 +658,17 @@ contract RingAggregatorHookForkTest is Test {
         assertLt(int256(delta.amount0()), 0, "delta.amount0 should be negative");
     }
 
-    // ─────────── Liquidity is blocked ───────────
+    // ─────────── Liquidity is allowed ───────────
 
-    function test_fork_modifyLiquidityReverts_addPosition() public requireFork {
+    function test_fork_modifyLiquidity_addPosition() public requireFork {
         ModifyLiquidityParams memory params =
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 1e18, salt: bytes32(0)});
-        vm.expectRevert();
         modifyRouter.modifyLiquidity(ethUsdcKey, params, "");
     }
 
-    function test_fork_modifyLiquidityReverts_removePosition() public requireFork {
+    function test_fork_modifyLiquidity_removePosition() public requireFork {
         ModifyLiquidityParams memory params =
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: -1e18, salt: bytes32(0)});
-        vm.expectRevert();
         modifyRouter.modifyLiquidity(ethUsdcKey, params, "");
     }
 

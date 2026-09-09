@@ -72,7 +72,6 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
     error InvalidPoolKey();
     error UseFewTokenHookForWrapPairs();
     error NoFewV2Route();
-    error LiquidityNotAllowed();
     error TokenMismatch(address pair);
     error ExactOutputUnderfilled(uint256 actual, uint256 expected);
     error EthForwardFailed();
@@ -184,7 +183,7 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         return Hooks.Permissions({
             beforeInitialize: true,
             afterInitialize: false,
-            beforeAddLiquidity: true,
+            beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterRemoveLiquidity: false,
@@ -251,16 +250,6 @@ contract RingAggregatorHook is BaseHook, DeltaResolver, ReentrancyGuard {
         address u1 = t1 == address(0) ? address(weth) : t1;
         fewA = fewFactory.getWrappedToken(u0);
         fewB = fewFactory.getWrappedToken(u1);
-    }
-
-    // ============ beforeAddLiquidity ============
-    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
-        internal
-        pure
-        override
-        returns (bytes4)
-    {
-        revert LiquidityNotAllowed();
     }
 
     // ============ beforeSwap ============
